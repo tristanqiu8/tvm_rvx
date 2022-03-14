@@ -131,13 +131,11 @@ def partition_for_rvx(mod, params=None):
         mod["main"] = bind_params_by_name(mod["main"], params)
     seq = tvm.transform.Sequential(
         [
-        [
             transform.InferType(),
             transform.MergeComposite(pattern_table()),
             transform.AnnotateTarget("rvx"),
             transform.MergeCompilerRegions(),
             transform.PartitionGraph(),
-        ]
         ]
     )
 
