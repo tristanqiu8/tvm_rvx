@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -15,5 +14,17 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-export VTA_HW_PATH=`pwd`/3rdparty/vta-hw
-cd $1 && cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo && make $2 && cd ..
+
+if(USE_LIBTORCH)
+  find_package(Torch REQUIRED PATHS ${USE_LIBTORCH}/share/cmake/Torch
+               )
+  list(APPEND TVM_RUNTIME_LINKER_LIBS ${TORCH_LIBRARIES})
+  include_directories(${TORCH_INCLUDE_DIRS})
+
+  file(GLOB LIBTORCH_RELAY_CONTRIB_SRC
+    src/relay/backend/contrib/libtorch/libtorch_codegen.cc
+    src/runtime/contrib/libtorch/libtorch_runtime.cc
+    )
+  list(APPEND COMPILER_SRCS ${LIBTORCH_RELAY_CONTRIB_SRC})
+
+endif(USE_LIBTORCH)

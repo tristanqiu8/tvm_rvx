@@ -189,6 +189,12 @@ class Target(Object):
         return list(self.attrs.get("mattr", []))
 
     @property
+    def supports_integer_dot_product(self):
+        if self.attrs.get("supports_integer_dot_product", []):
+            return bool(self.attrs["supports_integer_dot_product"])
+        return False
+
+    @property
     def libs(self):
         return list(self.attrs.get("libs", []))
 
@@ -339,6 +345,7 @@ MICRO_SUPPORTED_MODELS = {
     "sam3x8e": ["-mcpu=cortex-m3"],
     "stm32f746xx": ["-mcpu=cortex-m7", "-march=armv7e-m"],
     "stm32l4r5zi": ["-mcpu=cortex-m4"],
+    "stm32u5xx": ["-mcpu=cortex-m33"],
     "zynq_mp_r5": ["-mcpu=cortex-r5"],
 }
 

@@ -145,7 +145,7 @@ def conv2d_strategy_cuda(attrs, inputs, out_type, target):
         if layout == "NCHW":
             assert kernel_layout == "OIHW"
             if (
-                target.kind.name == "cuda"
+                (target.kind.name in ["cuda", "vulkan"])
                 and data.dtype in ("int8", "uint8")
                 and kernel.dtype in ("int8", "uint8")
             ):
@@ -296,7 +296,11 @@ def conv2d_strategy_cuda(attrs, inputs, out_type, target):
                     "Unsupported shape for conv2d HWNC.\
                                     Need to satisfy tensor core schedule."
                 )
-        elif target.kind.name == "cuda" and layout == "NCHW4c" and data.dtype in ["int8", "uint8"]:
+        elif (
+            (target.kind.name in ["cuda", "vulkan"])
+            and layout == "NCHW4c"
+            and data.dtype in ["int8", "uint8"]
+        ):
             assert kernel_layout == "OIHW4o4i"
             strategy.add_implementation(
                 wrap_compute_conv2d(topi.cuda.conv2d_NCHWc_int8, True),
@@ -372,7 +376,7 @@ def conv2d_strategy_cuda(attrs, inputs, out_type, target):
             ic_chunk = in_channels // 4
 
             if (
-                target.kind.name == "cuda"
+                (target.kind.name in ["cuda", "vulkan"])
                 and data.dtype in ["int8", "uint8"]
                 and kernel.dtype in ["int8", "uint8"]
                 and channels % groups == 0
@@ -593,9 +597,9 @@ def conv2d_transpose_strategy_cuda(attrs, inputs, out_type, target):
     strategy = _op.OpStrategy()
     num_strategies = 0
 
-    if layout == "NCHW" and groups == 1:
+    if layout == "NCHW":
         strategy.add_implementation(
-            wrap_compute_conv2d_transpose(topi.cuda.conv2d_transpose_nchw),
+            wrap_compute_conv2d_transpose(topi.cuda.conv2d_transpose_nchw, has_groups=True),
             wrap_topi_schedule(topi.cuda.schedule_conv2d_transpose_nchw),
             name="conv2d_transpose_nchw.cuda",
         )
