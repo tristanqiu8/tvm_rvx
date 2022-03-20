@@ -36,12 +36,7 @@
 
 #include "../../utils.h"
 
-#ifdef USE_JSON_RUNTIME
-#include "../../../../runtime/contrib/json/json_node.h"
-#include "../codegen_json/codegen_json.h"
-#else
 #include "../codegen_c/codegen_c.h"
-#endif
 
 namespace tvm {
 namespace relay {
@@ -49,7 +44,6 @@ namespace contrib {
 
 using namespace backend;
 
-#ifndef USE_JSON_RUNTIME  // C source runtime
 inline size_t GetShape1DSize(const Type& type) {
   const auto shape = GetShape(type);
   return std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int>());
@@ -113,21 +107,21 @@ std::vector<std::string> Relu(const CallNode* call) {
   return args;
 }
 
-std::vector<std::string> BatchNorm(const CallNode* call) {
-  std::vector<std::string> args;
-  const auto* bn_attr = call->attrs.as<BatchNormAttrs>();
-  auto ishape = GetShape(call->args[0]->checked_type());
+// std::vector<std::string> BatchNorm(const CallNode* call) {
+//   std::vector<std::string> args;
+//   const auto* bn_attr = call->attrs.as<BatchNormAttrs>();
+//   auto ishape = GetShape(call->args[0]->checked_type());
 
-  // Args: N, C, H, W
-  for (auto s : ishape) {
-    args.push_back(std::to_string(s));
-  }
+//   // Args: N, C, H, W
+//   for (auto s : ishape) {
+//     args.push_back(std::to_string(s));
+//   }
 
-  // Args: epsilon
-  args.push_back(std::to_string(bn_attr->epsilon));
+//   // Args: epsilon
+//   args.push_back(std::to_string(bn_attr->epsilon));
 
-  return args;
-}
+//   return args;
+// }
 
 // should comply with src/runtime/contrib/dnnl/dnnl.cc
 #define DNNL_BINARY_ADD 0
@@ -361,7 +355,7 @@ class CodegenDNNL : public MemoizedExprTranslator<std::vector<Output>>, public C
   /*! \brief The variable name to constant mapping. */
   Array<String> const_vars_;
 
-  friend class DNNLModuleCodegen;
+  friend class RVXModuleCodegen;
 };
 
 /*!
@@ -369,7 +363,7 @@ class CodegenDNNL : public MemoizedExprTranslator<std::vector<Output>>, public C
  * libraries. The code is a CSourceModule that can be compiled separately and
  * linked together with a DSOModule.
  */
-class DNNLModuleCodegen : public CSourceModuleCodegenBase {
+class RVXModuleCodegen : public CSourceModuleCodegenBase {
  public:
   // Create a corresponding DNNL function for the given relay Function.
   std::pair<std::string, Array<String>> GenDNNLFunc(const Function& func) {
@@ -434,129 +428,17 @@ class DNNLModuleCodegen : public CSourceModuleCodegenBase {
   std::ostringstream code_stream_;
 };
 
-#else  // DNNL JSON runtime
-
-class DNNLJSONSerializer : public backend::contrib::JSONSerializer {
-  using JSONGraphNode = tvm::runtime::json::JSONGraphNode;
-  using JSONGraphNodeEntry = tvm::runtime::json::JSONGraphNodeEntry;
-
-  std::map<std::string, std::string> op_map{
-      {"bias", "add"},
-      {"relu", "nn.relu"},
-      {"tanh", "tanh"},
-      {"sigmoid", "sigmoid"},
-      {"nn.deconv2d", "nn.conv2d_transpose"},
-      {"nn.deconv3d", "nn.conv3d_transpose"},
-  };
-
-  std::vector<std::string> ParsingOpList(const std::string& pattern_name,
-                                         std::string interval = "_") {
-    ICHECK_NE(pattern_name, "");
-    std::vector<std::string> op_list;
-    size_t pos = 0, start = 0;
-    while ((pos = pattern_name.find(interval, start)) != std::string::npos) {
-      std::string op_name = pattern_name.substr(start, pos - start);
-      if (op_name.find("dnnl") != std::string::npos) {
-        op_name.replace(op_name.find("dnnl"), 4, "nn");
-        if (op_name.find("deconv") != std::string::npos) {
-          op_name = op_map[op_name];
-        }
-      } else {
-        op_name = op_map[op_name];
-      }
-      if (pos > start) op_list.push_back(op_name);
-      start = pos + interval.size();
-    }
-    if (pattern_name.size() > start) {
-      op_list.push_back(op_map[pattern_name.substr(start)]);
-    }
-    return op_list;
-  }
-
- public:
-  DNNLJSONSerializer(const std::string& symbol, const Expr& expr) : JSONSerializer(symbol, expr) {}
-
-  std::vector<JSONGraphNodeEntry> VisitExpr_(const CallNode* cn) override {
-    Expr expr = GetRef<Expr>(cn);
-    std::string name;
-    const CallNode* call = cn;
-    if (const auto* op_node = cn->op.as<OpNode>()) {
-      name = op_node->name;
-    } else if (const auto* fn = cn->op.as<FunctionNode>()) {
-      auto comp = fn->GetAttr<String>(attr::kComposite);
-      ICHECK(comp.defined()) << "DNNL JSON runtime only supports composite functions.";
-      name = comp.value();
-
-      if (name.find("dnnl.deconv2d") != std::string::npos) {
-        std::vector<std::string> op_list = ParsingOpList(name);
-        call = GetRootCall(fn->body.as<CallNode>(), op_list.size() - 1, op_list);
-        ICHECK(call->op.as<OpNode>()) << "Not op node";
-      } else if (name.find("dnnl.deconv3d") != std::string::npos) {
-        std::vector<std::string> op_list = ParsingOpList(name);
-        call = GetRootCall(fn->body.as<CallNode>(), op_list.size() - 1, op_list);
-        ICHECK(call->op.as<OpNode>()) << "Not op node";
-      } else if (name.find("dnnl.conv1d") != std::string::npos) {
-        std::vector<std::string> op_list = ParsingOpList(name);
-        call = GetRootCall(fn->body.as<CallNode>(), op_list.size() - 1, op_list);
-        ICHECK(call->op.as<OpNode>()) << "Not op node";
-      } else if (name.find("dnnl.conv2d") != std::string::npos) {
-        std::vector<std::string> op_list = ParsingOpList(name);
-        call = GetRootCall(fn->body.as<CallNode>(), op_list.size() - 1, op_list);
-        ICHECK(call->op.as<OpNode>()) << "Not op node";
-      } else if (name.find("dnnl.conv3d") != std::string::npos) {
-        std::vector<std::string> op_list = ParsingOpList(name);
-        call = GetRootCall(fn->body.as<CallNode>(), op_list.size() - 1, op_list);
-        ICHECK(call->op.as<OpNode>()) << "Not op node";
-      } else if (name.find("dnnl.dense") != std::string::npos) {
-        std::vector<std::string> op_list = ParsingOpList(name);
-        call = GetRootCall(fn->body.as<CallNode>(), op_list.size() - 1, op_list);
-        ICHECK(call->op.as<OpNode>()) << "Not op node";
-      } else {
-        LOG(FATAL) << "Unrecognized DNNL pattern: " << name;
-      }
-    } else {
-      LOG(FATAL) << "DNNL JSON runtime does not support calls to " << cn->op->GetTypeKey();
-    }
-
-    std::vector<JSONGraphNodeEntry> inputs;
-    for (const auto& arg : cn->args) {
-      auto res = VisitExpr(arg);
-      inputs.insert(inputs.end(), res.begin(), res.end());
-    }
-    auto node = std::make_shared<JSONGraphNode>(name,     /* name_ */
-                                                "kernel", /* op_type_ */
-                                                inputs, 1 /* num_outputs_ */);
-    SetCallNodeAttribute(node, call);
-    return AddNode(node, GetRef<Expr>(cn));
-  }
-};
-#endif
 
 /*!
  * \brief The external compiler/codegen tool. It takes a Relay expression/module and
  * compile it into a runtime module.
  */
-runtime::Module DNNLCompiler(const ObjectRef& ref) {
-#ifdef USE_JSON_RUNTIME
-  ICHECK(ref->IsInstance<FunctionNode>());
-  auto func = Downcast<Function>(ref);
-  auto func_name = GetExtSymbol(func);
-  DNNLJSONSerializer serializer(func_name, func);
-  serializer.serialize();
-  std::string graph_json = serializer.GetJSON();
-  auto params = serializer.GetParams();
-
-  const auto* pf = runtime::Registry::Get("runtime.DNNLJSONRuntimeCreate");
-  ICHECK(pf != nullptr) << "Cannot find JSON runtime module to create";
-  auto mod = (*pf)(func_name, graph_json, params);
-  return mod;
-#else
-  DNNLModuleCodegen dnnl;
-  return dnnl.CreateCSourceModule(ref);
-#endif
+runtime::Module RVXCompiler(const ObjectRef& ref) {
+  RVXModuleCodegen rvx;
+  return rvx.CreateCSourceModule(ref);
 }
 
-TVM_REGISTER_GLOBAL("relay.ext.dnnl").set_body_typed(DNNLCompiler);
+TVM_REGISTER_GLOBAL("relay.ext.rvx").set_body_typed(RVXCompiler);
 
 }  // namespace contrib
 }  // namespace relay
