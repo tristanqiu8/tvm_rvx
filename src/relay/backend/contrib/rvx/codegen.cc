@@ -392,17 +392,18 @@ class RVXModuleCodegen : public CSourceModuleCodegenBase {
    */
   runtime::Module CreateCSourceModule(const ObjectRef& ref) override {
     // Create headers
-    code_stream_ << "#include <cstdint>\n";
-    code_stream_ << "#include <cstdlib>\n";
-    code_stream_ << "#include <cstring>\n";
-    code_stream_ << "#include <vector>\n";
+    code_stream_ << "#include <stdlib.h>\n";
+    code_stream_ << "#include <string.h>\n";
+    code_stream_ << "#include <stdio.h>\n";
+    code_stream_ << "#include <math.h>\n";
+    code_stream_ << "#include <time.h>\n";
     code_stream_ << "#include <tvm/runtime/c_runtime_api.h>\n";
     code_stream_ << "#include <tvm/runtime/packed_func.h>\n";
     code_stream_ << "#include <dlpack/dlpack.h>\n";
     // dnnl_kernel file is saved under src/runtime/contrib/dnnl so that we don't
     // expose it to ordinary users. To make export_library use it, users need to
     // pass -I${PATH_TO_TVM}/src/runtime/contrib
-    code_stream_ << "#include <dnnl/dnnl_kernel.h>\n";
+    // code_stream_ << "#include <dnnl/dnnl_kernel.h>\n";
     code_stream_ << "using namespace tvm::runtime;\n";
     code_stream_ << "using namespace tvm::runtime::contrib;\n";
     code_stream_ << "\n";
