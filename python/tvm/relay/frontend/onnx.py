@@ -1484,11 +1484,21 @@ class Squeeze(OnnxOpConverter):
 
     @classmethod
     def _impl_v13(cls, inputs, attr, params):
+        ishape = infer_shape(inputs[0])
         axis = inputs[1]
+
+        if axis is None:
+            # If axes is not provided, all the single dimensions will be removed from the shape.
+            if not ishape:  # scalar
+                return inputs[0]
+
+            axis = [i for i in range(len(ishape)) if ishape[i] == 1]
+            axis = _op.const(axis)
+
         dtype = infer_type(axis).checked_type.dtype
 
         if isinstance(axis, _expr.Constant):
-            constant_axes = list(inputs[1].data.numpy())
+            constant_axes = list(axis.data.numpy())
             constant_axes = list(map(int, constant_axes))
             return _op.squeeze(inputs[0], constant_axes)
 
@@ -1841,6 +1851,18 @@ class HardSigmoid(OnnxOpConverter):
         return AttrCvt("clip")([transformX], attr)
 
 
+class HardSwish(OnnxOpConverter):
+    """Operator converter for HardSwish."""
+
+    @classmethod
+    def _impl_v14(cls, inputs, attr, params):
+        alpha = attr.get("alpha", 1 / 6)
+        beta = attr.get("beta", 0.5)
+        transformX = inputs[0] * _expr.const(alpha) + _expr.const(beta)
+        attr = {"a_min": 0, "a_max": 1}
+        return inputs[0] * AttrCvt("clip")([transformX], attr)
+
+
 class Reduce(OnnxOpConverter):
     """Operator converter for reduce ops."""
 
@@ -1853,6 +1875,9 @@ class Reduce(OnnxOpConverter):
 
     @classmethod
     def _impl_v1(cls, inputs, attr, params):
+        if not infer_shape(inputs[0]):  # promote scalar to 1-D tensor
+            inputs[0] = _op.expand_dims(inputs[0], axis=0)
+
         if "axes" in attr:
             axis = attr.get("axes", 0)
         else:
@@ -1863,6 +1888,9 @@ class Reduce(OnnxOpConverter):
 
     @classmethod
     def _impl_v12(cls, inputs, attr, params):
+        if not infer_shape(inputs[0]):  # promote scalar to 1-D tensor
+            inputs[0] = _op.expand_dims(inputs[0], axis=0)
+
         if len(inputs) == 2:
             if isinstance(inputs[1], _expr.Constant):
                 # Get axis and unpack scalar
@@ -1915,6 +1943,9 @@ class ReduceSumSquare(OnnxOpConverter):
 
     @classmethod
     def _impl_v1(cls, inputs, attr, params):
+        if not infer_shape(inputs[0]):  # promote scalar to 1-D tensor
+            inputs[0] = _op.expand_dims(inputs[0], axis=0)
+
         if "axes" in attr:
             axis = attr.get("axes", 0)
         else:
@@ -1931,6 +1962,9 @@ class ReduceL1(OnnxOpConverter):
 
     @classmethod
     def _impl_v1(cls, inputs, attr, params):
+        if not infer_shape(inputs[0]):  # promote scalar to 1-D tensor
+            inputs[0] = _op.expand_dims(inputs[0], axis=0)
+
         if "axes" in attr:
             axis = attr.get("axes", 0)
         else:
@@ -1947,6 +1981,9 @@ class ReduceL2(OnnxOpConverter):
 
     @classmethod
     def _impl_v1(cls, inputs, attr, params):
+        if not infer_shape(inputs[0]):  # promote scalar to 1-D tensor
+            inputs[0] = _op.expand_dims(inputs[0], axis=0)
+
         if "axes" in attr:
             axis = attr.get("axes", 0)
         else:
@@ -1964,6 +2001,9 @@ class ReduceLogSum(OnnxOpConverter):
 
     @classmethod
     def _impl_v1(cls, inputs, attr, params):
+        if not infer_shape(inputs[0]):  # promote scalar to 1-D tensor
+            inputs[0] = _op.expand_dims(inputs[0], axis=0)
+
         if "axes" in attr:
             axis = attr.get("axes", 0)
         else:
@@ -4676,6 +4716,7 @@ def _get_convert_map(opset):
         "PRelu": Prelu.get_converter(opset),
         "Sigmoid": Renamer("sigmoid"),
         "HardSigmoid": HardSigmoid.get_converter(opset),
+        "HardSwish": HardSwish.get_converter(opset),
         "Max": Maximum.get_converter(opset),
         "Min": Minimum.get_converter(opset),
         "Sum": Sum.get_converter(opset),

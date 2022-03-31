@@ -307,6 +307,10 @@ class PyTorchOpConverter:
         one = _expr.const(1, dtype=dtype)
         return _op.log(inputs[0] + one)
 
+    def square(self, inputs, input_types):
+        (dtype,) = input_types
+        return _op.power(inputs[0], _expr.const(2, dtype))
+
     def arange(self, inputs, input_types):
         def _get_value(val, dtype):
             # dtype is a tvm dtype
@@ -1248,8 +1252,11 @@ class PyTorchOpConverter:
         end = int(inputs[2])
         dshape = get_const_tuple(self.infer_shape_with_prelude(data))
         ndim = len(dshape)
+        if start < 0:
+            start += ndim
         if end < 0:
             end += ndim
+        assert start <= end, "start dim cannot come after end dim"
         new_shape = [0] * start
 
         new_shape.append(-1)
@@ -2031,6 +2038,14 @@ class PyTorchOpConverter:
             msg = "The input list is expected to be List ADT"
             assert isinstance(ty, tvm.ir.TypeCall) and ty.func == list_ty, msg
             return self.tensor_array_stack(inputs, input_types)
+
+    def sub(self, inputs, input_types):
+        if len(inputs) == 3:
+            data0, data1, alpha = self.pytorch_promote_types(inputs, input_types)
+            return get_relay_op("subtract")(data0, alpha * data1)
+        else:
+            data0, data1 = self.pytorch_promote_types(inputs, input_types)
+            return get_relay_op("subtract")(data0, data1)
 
     def rsub(self, inputs, input_types):
         data0, data1, alpha = self.pytorch_promote_types(inputs, input_types)
@@ -2852,7 +2867,10 @@ class PyTorchOpConverter:
             inp = inputs[0]
         return op(inp, axis=dim, keepdims=keepdim)
 
-    def searchsorted_common(self, sorted_sequence, values, out_int32, right):
+    def searchsorted_common(
+        self, sorted_sequence, values, out_int32, right, side=None, out=None, sorter=None
+    ):
+        assert side is None and out is None and sorter is None, "unsupported parameters"
         dtype = "int32" if out_int32 else "int64"
         values_shape = _infer_shape(values)
 
@@ -2952,7 +2970,7 @@ class PyTorchOpConverter:
             "aten::pixel_shuffle": self.pixel_shuffle,
             "aten::device": self.none,
             "prim::device": self.none,
-            "aten::sub": self.make_elemwise("subtract"),
+            "aten::sub": self.sub,
             "aten::max": self.max,
             "aten::min": self.min,
             "aten::mul": self.make_elemwise("multiply"),
@@ -3093,6 +3111,7 @@ class PyTorchOpConverter:
             "aten::sign": self.make_unary("sign"),
             "aten::sqrt": self.make_unary("sqrt"),
             "aten::rsqrt": self.make_unary("rsqrt"),
+            "aten::square": self.square,
             "aten::ceil": self.make_unary("ceil"),
             "aten::floor": self.make_unary("floor"),
             "aten::round": self.make_unary("round"),
