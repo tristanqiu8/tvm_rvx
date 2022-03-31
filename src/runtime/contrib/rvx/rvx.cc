@@ -32,7 +32,7 @@
 #include <string>
 #include <vector>
 
-#include "dnnl_kernel.h"
+#include "rvx_kernel.h"
 
 namespace tvm {
 namespace runtime {
