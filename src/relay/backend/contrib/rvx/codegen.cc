@@ -18,8 +18,8 @@
  */
 
 /*!
- * \file src/relay/backend/contrib/dnnl/codegen.cc
- * \brief Implementation of DNNL codegen APIs.
+ * \file src/relay/backend/contrib/rvx/codegen.cc
+ * \brief Implementation of RVX codegen APIs.
  */
 
 #include <tvm/relay/attrs/nn.h>
@@ -44,115 +44,12 @@ namespace contrib {
 
 using namespace backend;
 
-inline size_t GetShape1DSize(const Type& type) {
-  const auto shape = GetShape(type);
-  return std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int>());
-}
-
-inline std::string GetShapeString(std::vector<int> shape) {
-  std::string v = "std::vector<long int>{";
-  for (auto s : shape) {
-    v += std::to_string(s) + ",";
-  }
-  v += "}";
-  return v;
-}
-
-std::vector<std::string> Conv2d(const CallNode* call) {
-  std::vector<std::string> args;
-  const auto* conv2d_attr = call->attrs.as<Conv2DAttrs>();
-  ICHECK(conv2d_attr);
-
-  auto ishape = GetShape(call->args[0]->checked_type());
-  auto wshape = GetShape(call->args[1]->checked_type());
-
-  // Args: N, C, H, W
-  for (auto s : ishape) {
-    args.push_back(std::to_string(s));
-  }
-
-  // Args: O, G, Ph0, Pw0, Ph1, Pw1, Kh, Kw, Sh, Sw
-  args.push_back(std::to_string(wshape[0]));
-  args.push_back(std::to_string(conv2d_attr->groups));
-  args.push_back(std::to_string(conv2d_attr->padding[0].as<IntImmNode>()->value));
-  args.push_back(std::to_string(conv2d_attr->padding[1].as<IntImmNode>()->value));
-  args.push_back(std::to_string(conv2d_attr->padding[2].as<IntImmNode>()->value));
-  args.push_back(std::to_string(conv2d_attr->padding[3].as<IntImmNode>()->value));
-  args.push_back(std::to_string(wshape[2]));
-  args.push_back(std::to_string(wshape[3]));
-  args.push_back(std::to_string(conv2d_attr->strides[0].as<IntImmNode>()->value));
-  args.push_back(std::to_string(conv2d_attr->strides[1].as<IntImmNode>()->value));
-
-  return args;
-}
-
-std::vector<std::string> Dense(const CallNode* call) {
-  std::vector<std::string> args;
-  auto ishape = GetShape(call->args[0]->checked_type());
-  auto wshape = GetShape(call->args[1]->checked_type());
-
-  // Args: N, C, O
-  args.push_back(std::to_string(ishape[0]));
-  args.push_back(std::to_string(ishape[1]));
-  args.push_back(std::to_string(wshape[0]));
-
-  return args;
-}
-
-std::vector<std::string> Relu(const CallNode* call) {
-  std::vector<std::string> args;
-  auto ishape = GetShape(call->args[0]->checked_type());
-  // Args: N, C, H, W
-  args.push_back(GetShapeString(ishape));
-  return args;
-}
-
-// std::vector<std::string> BatchNorm(const CallNode* call) {
-//   std::vector<std::string> args;
-//   const auto* bn_attr = call->attrs.as<BatchNormAttrs>();
-//   auto ishape = GetShape(call->args[0]->checked_type());
-
-//   // Args: N, C, H, W
-//   for (auto s : ishape) {
-//     args.push_back(std::to_string(s));
-//   }
-
-//   // Args: epsilon
-//   args.push_back(std::to_string(bn_attr->epsilon));
-
-//   return args;
-// }
-
-// should comply with src/runtime/contrib/dnnl/dnnl.cc
-#define DNNL_BINARY_ADD 0
-#define DNNL_BINARY_MUL 1
-
-std::vector<std::string> Add(const CallNode* call) {
-  std::vector<std::string> args;
-  auto ishape = GetShape(call->args[0]->checked_type());
-  args.push_back(std::to_string(DNNL_BINARY_ADD));
-  // Args: H, W
-  args.push_back(GetShapeString(ishape));
-  return args;
-}
-
-std::vector<std::string> Multiply(const CallNode* call) {
-  std::vector<std::string> args;
-  auto ishape = GetShape(call->args[0]->checked_type());
-  args.push_back(std::to_string(DNNL_BINARY_MUL));
-  // Args: H, W
-  args.push_back(GetShapeString(ishape));
-  return args;
-}
-
-// TODO(@zhiics, @comaniac): This is a basic implementation. We should implement
-// all utilities and make a base class for users to implement.
-class CodegenDNNL : public MemoizedExprTranslator<std::vector<Output>>, public CodegenCBase {
+class CodegenRVX : public MemoizedExprTranslator<std::vector<Output>>, public CodegenCBase {
  public:
-  explicit CodegenDNNL(const std::string& id) { this->ext_func_id_ = id; }
+  explicit CodegenRVX(const std::string& id) { this->ext_func_id_ = id; }
 
   std::vector<Output> VisitExprDefault_(const Object* op) final {
-    LOG(FATAL) << "DNNL codegen doesn't support: " << op->GetTypeKey();
+    LOG(FATAL) << "RVX codegen doesn't support: " << op->GetTypeKey();
     return {};
   }
 
@@ -186,7 +83,9 @@ class CodegenDNNL : public MemoizedExprTranslator<std::vector<Output>>, public C
     Output output;
     // Get const: static_cast<float*>(dnnl_0_consts[0]->data)
     output.name = CreateDataReference(ext_func_id_, const_idx_);
-    output.dtype = "float";
+    const auto* type_node = cn->checked_type().as<TensorTypeNode>();
+    ICHECK(type_node);
+    const auto& dtype = GetDtypeString(type_node);
 
     // Generate the global variable for needed ndarrays
     if (const_array_name_.empty()) {
@@ -197,13 +96,12 @@ class CodegenDNNL : public MemoizedExprTranslator<std::vector<Output>>, public C
 
     // Give the ndarray a unique name to ease the initialization of it at
     // runtime.
+    ICHECK(dtype == "int") << "Only int are supported for now.";
+    output.dtype = dtype;
+
     std::string const_var_name = CreateConstVar(ext_func_id_, const_idx_);
     const_vars_.push_back(const_var_name);
     const_idx_++;
-
-    const auto* type_node = cn->checked_type().as<TensorTypeNode>();
-    ICHECK(type_node);
-    ICHECK_EQ(GetDtypeString(type_node), "float") << "Only float is supported for now.";
 
     return {output};
   }
@@ -211,9 +109,10 @@ class CodegenDNNL : public MemoizedExprTranslator<std::vector<Output>>, public C
   std::vector<Output> VisitExpr_(const CallNode* call) final {
     GenerateBodyOutput ret;
     if (const auto* func = call->op.as<FunctionNode>()) {
-      ret = GenerateCompositeFunctionCall(func, call);
+      ret = GenerateCompositeFunctionCall(func, call); //RVX will mostly go this one
     } else {
-      ret = GenerateOpCall(call);
+      // ret = GenerateOpCall(call);
+      LOG(FATAL) << "RVX does not support Op call"
     }
 
     buf_decl_.insert(buf_decl_.end(), ret.buffers.begin(), ret.buffers.end());
@@ -237,42 +136,21 @@ class CodegenDNNL : public MemoizedExprTranslator<std::vector<Output>>, public C
     return arg_names;
   }
 
-  GenerateBodyOutput GenerateOpCall(const CallNode* call) {
-    const auto* op_node = call->op.as<OpNode>();
-    ICHECK(op_node) << "Expect OpNode, but got " << call->op->GetTypeKey();
-
-    using ArgFunType = std::function<std::vector<std::string>(const CallNode*)>;
-    static const std::map<std::string, std::pair<std::string, ArgFunType>> op_map = {
-        {"nn.conv2d", {"dnnl_conv2d", Conv2d}}, {"nn.dense", {"dnnl_dense", Dense}},
-        {"nn.relu", {"dnnl_relu", Relu}},     
-        {"add", {"dnnl_binary_op", Add}},       {"multiply", {"dnnl_binary_op", Multiply}},
-    };
-
-    const auto op_name = GetRef<Op>(op_node)->name;
-    const auto iter = op_map.find(op_name);
-    if (iter != op_map.end()) {
-      return GenerateBody(call, iter->second.first, iter->second.second(call));
-    }
-
-    LOG(FATAL) << "Unsupported op: " << AsText(call->op, false);
-    return {};
-  }
-
   GenerateBodyOutput GenerateCompositeFunctionCall(const FunctionNode* callee,
                                                    const CallNode* caller) {
     const auto pattern_name = callee->GetAttr<runtime::String>(attr::kComposite);
     ICHECK(pattern_name.defined()) << "Only functions with composite attribute supported";
 
-    if (pattern_name == "dnnl.conv2d_bias_relu") {
-      const auto* conv_call =
-          GetRootCall(callee->body.as<CallNode>(), 2, {"nn.conv2d", "add", "nn.relu"});
-      return GenerateBody(conv_call, "dnnl_fused_conv2d_bias_relu", GetArgumentNames(caller),
-                          Conv2d(conv_call));
-    } else if (pattern_name == "dnnl.conv2d_relu") {
-      const auto* conv_call = GetRootCall(callee->body.as<CallNode>(), 1, {"nn.conv2d", "nn.relu"});
-      return GenerateBody(conv_call, "dnnl_fused_conv2d_relu", GetArgumentNames(caller),
-                          Conv2d(conv_call));
-    }
+    // if (pattern_name == "dnnl.conv2d_bias_relu") {
+    //   const auto* conv_call =
+    //       GetRootCall(callee->body.as<CallNode>(), 2, {"nn.conv2d", "add", "nn.relu"});
+    //   return GenerateBody(conv_call, "dnnl_fused_conv2d_bias_relu", GetArgumentNames(caller),
+    //                       Conv2d(conv_call));
+    // } else if (pattern_name == "dnnl.conv2d_relu") {
+    //   const auto* conv_call = GetRootCall(callee->body.as<CallNode>(), 1, {"nn.conv2d", "nn.relu"});
+    //   return GenerateBody(conv_call, "dnnl_fused_conv2d_relu", GetArgumentNames(caller),
+    //                       Conv2d(conv_call));
+    // }
 
     LOG(FATAL) << "Unknown composite function:" << pattern_name;
     return {};
@@ -366,13 +244,10 @@ class CodegenDNNL : public MemoizedExprTranslator<std::vector<Output>>, public C
 class RVXModuleCodegen : public CSourceModuleCodegenBase {
  public:
   // Create a corresponding DNNL function for the given relay Function.
-  std::pair<std::string, Array<String>> GenDNNLFunc(const Function& func) {
+  std::pair<std::string, Array<String>> GenCFunc(const Function& func) {
     ICHECK(func.defined()) << "Input error: expect a Relay function.";
-
-    // Record the external symbol for runtime lookup.
+    CodegenC builder(GetExtSymbol(func));
     auto sid = GetExtSymbol(func);
-
-    CodegenDNNL builder(sid);
     auto out = builder.VisitExpr(func->body);
     code_stream_ << builder.JIT(out);
 
@@ -409,7 +284,7 @@ class RVXModuleCodegen : public CSourceModuleCodegenBase {
     code_stream_ << "\n";
 
     ICHECK(ref->IsInstance<FunctionNode>());
-    auto res = GenDNNLFunc(Downcast<Function>(ref));
+    auto res = GenCFunc(Downcast<Function>(ref));
     std::string code = code_stream_.str();
     String sym = std::get<0>(res);
     Array<String> variables = std::get<1>(res);
