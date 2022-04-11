@@ -6354,19 +6354,27 @@ int main(int argc, char* argv[])
 	filename = "";
 	inputData = read_image(filename);
 	y=input(inputData,filename,28,28,3,1,6);//kernal_size=5
-
-// y=pool(y,26,26, MaxPool, 2,6,6,2);//kernal_size=3
+	// pattern: conv (no_bias) + pool + relu
+	
+	// y=pool(y,26,26, MaxPool, 2,6,6,2);//kernal_size=3 merged
 
 	y=conv(y,filename,13,13,3,6,9);//kernal_size=3
+	// pattern: conv (no_bias) + pool + relu
 	
-// y=pool(y,11,11, MaxPool,2,9,9,2);//kernal_size=3
+	// y=pool(y,11,11, MaxPool,2,9,9,2);//kernal_size=3 merged 
 	
 	y=pool(y,6,6, MaxPool,2,9,9,2);//kernal_size=3
+	// pool layer only
 
 	y1 = flatten(y, 3, 3, 9, 81);//kernal_size=3
+	//cpu core runs
+	
 	y1 = fc(y1,filename,81,45);
+	//cpu core runs
 
 	output(y1, filename, 45, 10,filename1);
+	//cpu core only
+
 	__asm__ __volatile__(
 	"rdcycle %[rdcycle]"
 	:[rdcycle] "=r"(cycle_e)
