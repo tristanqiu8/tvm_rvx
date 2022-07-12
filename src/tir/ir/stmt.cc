@@ -147,6 +147,26 @@ For::For(Var loop_var, PrimExpr min, PrimExpr extent, ForKind kind, Stmt body,
   ICHECK(loop_var.dtype().is_scalar());
   ICHECK(body.defined());
 
+  // When extent or min is an IntImm but has narrower dtype than loop_var, we directly promote them
+  // without raising errors.
+  auto try_promote_imm_dtype = [&](const PrimExpr& e) {
+    ICHECK(e.dtype().bits() <= loop_var.dtype().bits())
+        << " Loop variable's dtype (" << loop_var.dtype()
+        << ") is narrower than that of `min` or `extent` (" << e.dtype() << ")";
+    const IntImmNode* a = e.as<IntImmNode>();
+    if (a && e.dtype().bits() < loop_var.dtype().bits()) {
+      return make_const(loop_var.dtype(), a->value);
+    } else {
+      return e;
+    }
+  };
+
+  min = try_promote_imm_dtype(min);
+  extent = try_promote_imm_dtype(extent);
+
+  ICHECK(loop_var.dtype() == min.dtype()) << loop_var.dtype() << " vs " << min.dtype();
+  ICHECK(loop_var.dtype() == extent.dtype()) << loop_var.dtype() << " vs " << extent.dtype();
+
   ObjectPtr<ForNode> node = make_object<ForNode>();
   node->loop_var = std::move(loop_var);
   node->min = std::move(min);
@@ -417,7 +437,8 @@ TVM_STATIC_IR_FUNCTOR(ReprPrinter, vtable)
 // depending on the type of ObjectRef, it will either
 // create AllocateConstNode with irmod_storage_idx or data
 AllocateConst::AllocateConst(Var buffer_var, DataType dtype, Array<PrimExpr> extents,
-                             ObjectRef data_or_idx, Stmt body, Span span) {
+                             ObjectRef data_or_idx, Stmt body, Map<String, ObjectRef> annotations,
+                             Span span) {
   ICHECK(IsPointerType(buffer_var->type_annotation, dtype))
       << "The allocated data type (" << dtype
       << ") does not match the type annotation of the buffer " << buffer_var << " ("
@@ -436,6 +457,7 @@ AllocateConst::AllocateConst(Var buffer_var, DataType dtype, Array<PrimExpr> ext
   node->dtype = dtype;
   node->extents = std::move(extents);
   node->body = std::move(body);
+  node->annotations = annotations;
   node->span = std::move(span);
   if (data_or_idx->IsInstance<runtime::NDArray::ContainerType>()) {
     node->data = Optional<tvm::runtime::NDArray>(Downcast<runtime::NDArray>(data_or_idx));
@@ -465,8 +487,9 @@ int64_t AllocateConstNode::ConstantAllocationSize(const Array<PrimExpr>& extents
 }
 TVM_REGISTER_GLOBAL("tir.AllocateConst")
     .set_body_typed([](Var buffer_var, DataType dtype, Array<PrimExpr> extents,
-                       ObjectRef data_or_idx, Stmt body, Span span) {
-      return AllocateConst(buffer_var, dtype, extents, data_or_idx, body, span);
+                       ObjectRef data_or_idx, Stmt body, Map<String, ObjectRef> annotations,
+                       Span span) {
+      return AllocateConst(buffer_var, dtype, extents, data_or_idx, body, annotations, span);
     });
 
 TVM_REGISTER_NODE_TYPE(AllocateConstNode);

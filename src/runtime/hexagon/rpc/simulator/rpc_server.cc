@@ -18,6 +18,7 @@
  */
 
 #include <HAP_farf.h>
+#include <dlfcn.h>
 
 #include <algorithm>
 #include <cassert>
@@ -27,7 +28,7 @@
 
 #include "../../../library_module.h"
 #include "../../../minrpc/minrpc_server.h"
-#include "../../hexagon/hexagon_common.h"
+#include "../../hexagon_common.h"
 #include "hexagon_sim_proto.h"
 #include "tvm/runtime/packed_func.h"
 #include "tvm/runtime/registry.h"
@@ -288,10 +289,19 @@ int DISPATCH_FUNCTION_NAME(void* serverp) {
   return 0;
 }
 
-int main() {
-  const auto* api_v2 = tvm::runtime::Registry::Get("device_api.hexagon.v2");
-  ICHECK(api_v2 != nullptr);
-  tvm::runtime::Registry::Register("device_api.hexagon", true).set_body(*api_v2);
+int main(int argc, char* argv[]) {
+  // Load C++RT and ourselves as "global" to make all the symbols defined
+  // there be visible to any subsequent libraries loaded via dlopen.
+  void* cxx_abi = dlopen("libc++abi.so", RTLD_GLOBAL);
+  ICHECK(cxx_abi != nullptr);
+  void* cxx = dlopen("libc++.so", RTLD_GLOBAL);
+  ICHECK(cxx != nullptr);
+  void* self = dlopen(argv[0], RTLD_GLOBAL);
+  ICHECK(self != nullptr);
+
+  const auto* api = tvm::runtime::Registry::Get("device_api.hexagon");
+  ICHECK(api != nullptr);
+  tvm::runtime::Registry::Register("device_api.cpu", true).set_body(*api);
 
   tvm::runtime::hexagon::SimulatorRPCServer server;
 
@@ -308,12 +318,21 @@ int main() {
     // nothing
   }
 
+  dlclose(self);
+  dlclose(cxx);
+  dlclose(cxx_abi);
   return 0;
+}
+
+// Workaround for missing functions in 8.5.08
+extern "C" {
+__attribute__((weak)) void _Get_eh_data() {}
+__attribute__((weak)) void _Parse_fde_instr() {}
 }
 
 TVM_REGISTER_GLOBAL("tvm.hexagon.load_module")
     .set_body([](tvm::runtime::TVMArgs args, tvm::runtime::TVMRetValue* rv) {
       std::string soname = args[0];
       tvm::ObjectPtr<tvm::runtime::Library> n = tvm::runtime::CreateDSOLibraryObject(soname);
-      *rv = CreateModuleFromLibrary(n, tvm::runtime::hexagon::WrapPackedFunc);
+      *rv = CreateModuleFromLibrary(n);
     });

@@ -30,10 +30,10 @@ pip3 install --upgrade \
     numpy~=1.19.5 \
     orderedset \
     packaging \
-    Pillow \
+    Pillow==9.1.0 \
     psutil \
     pytest \
-    tlcpack-sphinx-addon==0.2.1 \
+    git+https://github.com/tlc-pack/tlcpack-sphinx-addon.git@7f69989f1c6a6713d0bd7c27f8da2b48344117d3 \
     pytest-profiling \
     pytest-xdist \
     requests \
@@ -42,4 +42,5 @@ pip3 install --upgrade \
     synr==0.6.0 \
     junitparser==2.4.2 \
     six \
-    tornado
+    tornado \
+    pytest-lazy-fixture

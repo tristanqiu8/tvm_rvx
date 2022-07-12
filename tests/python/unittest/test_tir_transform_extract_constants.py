@@ -18,6 +18,7 @@ import numpy as np
 import tvm
 from tvm import tir
 from tvm.script import tir as T
+import tvm.testing
 
 
 @tvm.script.ir_module
@@ -49,7 +50,7 @@ class Module4:
 
 def test_const_extraction():
     mod = tvm.tir.transform.ExtractPrimFuncConstants()(Module4)
-    constants = mod.attrs["Constants"]
+    constants = mod.attrs["constants"]
     assert len(constants) == 2
 
     def _visit(stmt):
@@ -59,6 +60,8 @@ def test_const_extraction():
     for n, f in mod.functions.items():
         tvm.tir.stmt_functor.post_order_visit(f.body, _visit)
 
+    tvm.lower(mod)
+
 
 if __name__ == "__main__":
-    test_const_extraction()
+    tvm.testing.main()

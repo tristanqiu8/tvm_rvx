@@ -37,20 +37,21 @@ if __name__ == "__main__":
     env = {"VTA_HW_PATH": str(Path(os.getcwd()) / "3rdparty" / "vta-hw")}
     sccache_exe = shutil.which("sccache")
 
-    use_sccache = sccache_exe is not None and args.sccache_bucket is not None
+    use_sccache = sccache_exe is not None
     build_dir = Path(os.getcwd()) / args.build_dir
     build_dir = build_dir.relative_to(REPO_ROOT)
 
     if use_sccache:
-        env["SCCACHE_BUCKET"] = args.sccache_bucket
+        if args.sccache_bucket:
+            env["SCCACHE_BUCKET"] = args.sccache_bucket
+            logging.info(f"Using sccache bucket: {args.sccache_bucket}")
+        else:
+            logging.info(f"No sccache bucket set, using local cache")
         env["CXX"] = "/opt/sccache/c++"
         env["CC"] = "/opt/sccache/cc"
 
-        logging.info(f"Using sccache bucket: {args.sccache_bucket}")
     else:
         if sccache_exe is None:
-            reason = "'sccache' executable not found"
-        elif args.sccache_bucket is None:
             reason = "'sccache' executable not found"
         else:
             reason = "<unknown>"
@@ -63,21 +64,24 @@ if __name__ == "__main__":
         logging.info("===== sccache stats =====")
         sh.run("sccache --show-stats")
 
-    if "CI" in os.environ:
-        executors = int(os.environ["CI_NUM_EXECUTORS"])
-    else:
-        executors = int(os.environ.get("CI_NUM_EXECUTORS", 1))
+    executors = int(os.environ.get("CI_NUM_EXECUTORS", 1))
 
     nproc = multiprocessing.cpu_count()
 
     available_cpus = nproc // executors
     num_cpus = max(available_cpus, 1)
 
-    sh.run("cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo ..", cwd=build_dir)
+    sh.run("cmake -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo ..", cwd=build_dir)
+
     target = ""
     if args.cmake_target:
         target = args.cmake_target
-    sh.run(f"cmake --build . -- {target} VERBOSE=1 -j{num_cpus}", cwd=build_dir)
+
+    verbose = os.environ.get("VERBOSE", "true").lower() in {"1", "true", "yes"}
+    ninja_args = [target, f"-j{num_cpus}"]
+    if verbose:
+        ninja_args.append("-v")
+    sh.run(f"cmake --build . -- " + " ".join(ninja_args), cwd=build_dir)
 
     if use_sccache:
         logging.info("===== sccache stats =====")

@@ -25,6 +25,10 @@ from typing import Dict, Any, List, Tuple
 
 
 from git_utils import git, GitHubRepo, parse_remote, find_ccs
+from cmd_utils import tags_from_title
+
+
+GITHUB_NAME_REGEX = r"@[a-zA-Z0-9-]+"
 
 
 def parse_line(line: str) -> Tuple[str, List[str]]:
@@ -77,18 +81,6 @@ def fetch_issue(github: GitHubRepo, issue_number: int):
     return r
 
 
-def find_rollout_users(r: Dict[str, Any]):
-    issue = r["data"]["repository"]["issue"]
-    body = issue["body"]
-    for line in body.split("\n"):
-        line = line.strip()
-        if line.startswith("[temporary] opt-in: "):
-            line = line[len("[temporary] opt-in: ") :]
-            return find_ccs("cc " + line)
-
-    return []
-
-
 def parse_teams(r: Dict[str, Any], issue_number: int) -> Dict[str, str]:
     """
     Fetch an issue and parse out series of tagged people from the issue body
@@ -131,13 +123,7 @@ def parse_teams(r: Dict[str, Any], issue_number: int) -> Dict[str, str]:
     for tag in result:
         result[tag] = list(set(result[tag]))
 
-    return {k.lower(): v for k, v in result.items()}
-
-
-def tags_from_title(title: str) -> List[str]:
-    tags = re.findall(r"\[(.*?)\]", title)
-    tags = [t.strip() for t in tags]
-    return tags
+    return {k.lower(): v for k, v in result.items() if k.strip()}
 
 
 def tags_from_labels(labels: List[Dict[str, Any]]) -> List[str]:
@@ -209,9 +195,6 @@ if __name__ == "__main__":
 
     # Fetch the list of teams
     teams = parse_teams(issue_data, issue_number=int(args.team_issue))
-    # When rolling out this tool it is limited to certain users, so find that list
-    rollout_users = find_rollout_users(issue_data)
-    print(f"[slow rollout] Limiting to opted-in users: {rollout_users}")
 
     print(f"Found these teams in issue #{args.team_issue}\n{json.dumps(teams, indent=2)}")
 
@@ -236,14 +219,14 @@ if __name__ == "__main__":
     tags = [t.lower() for t in tags]
     print(f"Found tags: {tags}")
 
-    if author not in rollout_users:
-        print(f"Author {author} is not opted in, quitting")
-        exit(0)
-
     # Update the PR or issue based on tags in the title and GitHub tags
     to_cc = [teams.get(t, []) for t in tags]
     to_cc = list(set(item for sublist in to_cc for item in sublist))
     to_cc = [user for user in to_cc if user != author]
+    existing_tags = list(set(re.findall(GITHUB_NAME_REGEX, body)))
+    existing_tags = set(tag.replace("@", "") for tag in existing_tags)
+    print(f"Found existing tags: {existing_tags}")
+    to_cc = [user for user in to_cc if user not in existing_tags]
     print("Users to cc based on labels", to_cc)
 
     # Create the new PR/issue body

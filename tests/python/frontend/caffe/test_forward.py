@@ -877,12 +877,12 @@ def test_forward_TanH():
 
 
 def _test_reduction(data, **kwargs):
-    """ One iteration of Reduction """
+    """One iteration of Reduction"""
     _test_op(data, L.Reduction, "Reduction", **kwargs)
 
 
 def test_forward_Reduction():
-    """ Reduction """
+    """Reduction"""
     reduction_op = {"SUM": 1, "ASUM": 2, "SUMSQ": 3, "MEAN": 4}
     _test_reduction(np.random.rand(10).astype(np.float32), operation=reduction_op["SUM"], axis=0)
     _test_reduction(
@@ -1053,10 +1053,10 @@ def _test_mobilenetv2(data):
     data_process = data_process.astype(np.float32)
 
     proto_file_url = (
-        "https://github.com/shicai/MobileNet-Caffe/raw/" "master/mobilenet_v2_deploy.prototxt"
+        "https://github.com/shicai/MobileNet-Caffe/raw/master/mobilenet_v2_deploy.prototxt"
     )
     blob_file_url = (
-        "https://github.com/shicai/MobileNet-Caffe/blob/" "master/mobilenet_v2.caffemodel?raw=true"
+        "https://github.com/shicai/MobileNet-Caffe/blob/master/mobilenet_v2.caffemodel?raw=true"
     )
     proto_file = download_testdata(proto_file_url, "mobilenetv2.prototxt", module="model")
     blob_file = download_testdata(blob_file_url, "mobilenetv2.caffemodel", module="model")
@@ -1111,10 +1111,10 @@ def _test_resnet50(data):
     data_process = data_process.astype(np.float32)
 
     proto_file_url = (
-        "https://github.com/fernchen/CaffeModels/raw/" "master/resnet/ResNet-50-deploy.prototxt"
+        "https://github.com/fernchen/CaffeModels/raw/master/resnet/ResNet-50-deploy.prototxt"
     )
     blob_file_url = (
-        "https://github.com/fernchen/CaffeModels/raw/" "master/resnet/ResNet-50-model.caffemodel"
+        "https://github.com/fernchen/CaffeModels/raw/master/resnet/ResNet-50-model.caffemodel"
     )
 
     proto_file = download_testdata(proto_file_url, "resnet50.prototxt", module="model")

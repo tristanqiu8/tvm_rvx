@@ -26,7 +26,6 @@ from tvm.ir import Span, Range
 from tvm.tir import Stmt, PrimExpr, IterVar, Var, Buffer, BufferRegion, ForKind
 
 from .node import BufferSlice
-from .utils import buffer_slice_to_region
 
 from ..context_maintainer import ContextMaintainer
 from ..registry import register
@@ -177,12 +176,20 @@ class AllocateConst(WithScopeHandler):
     """
 
     def __init__(self):
-        def allocate_const(raw_data, dtype, shape, span=None):
+        def allocate_const(raw_data, dtype, shape, annotations=None, span=None):
             list_data = []
             for i in raw_data:
                 list_data.append(i.value)
             nd_data = tvm.nd.array(np.asarray(list_data, dtype=dtype))
-            n = tvm.tir.AllocateConst(self.buffer.data, dtype, shape, nd_data, self.body, span=span)
+            n = tvm.tir.AllocateConst(
+                self.buffer.data,
+                dtype,
+                shape,
+                nd_data,
+                self.body,
+                annotations=annotations,
+                span=span,
+            )
             return n
 
         super().__init__(allocate_const, concise_scope=True, def_symbol=True)
@@ -210,7 +217,7 @@ class AllocateConst(WithScopeHandler):
         else:
             raise Exception("Internal Bug")
 
-        def setup_buffer(data, dtype, shape, span: Span = None):
+        def setup_buffer(data, dtype, shape, annotations: dict = None, span: Span = None):
             """Setup buffer var for a given type."""
             self.buffer = tvm.tir.decl_buffer(
                 shape=shape,
@@ -313,6 +320,9 @@ class Let(WithScopeHandler):
 
         super().__init__(let, concise_scope=False, def_symbol=False)
 
+    def __call__(self, var: tvm.tir.Var, value: tvm.tir.PrimExpr, body: tvm.tir.PrimExpr):
+        return tvm.tir.Let(var, value, body)
+
 
 @register
 class Block(WithScopeHandler):
@@ -327,12 +337,10 @@ class Block(WithScopeHandler):
 
             # create block read/write regions
             reads: List[BufferRegion] = (
-                [buffer_slice_to_region(read) for read in block_info.reads]
-                if block_info.reads
-                else []
+                [read.as_buffer_region() for read in block_info.reads] if block_info.reads else []
             )
             writes: List[BufferRegion] = (
-                [buffer_slice_to_region(write) for write in block_info.writes]
+                [write.as_buffer_region() for write in block_info.writes]
                 if block_info.writes
                 else []
             )
@@ -467,18 +475,24 @@ class ForScopeHandler(ScopeHandler):
 
         self.node = node
         self.context = context
-        # generate loop vars
-        self.loop_vars = [
-            tvm.te.var(name, dtype="int32", span=span) for name, span in zip(loop_var_names, spans)
-        ]
         # collect loop infos by calling self.func
         call_with_error_reporting(context.report_error, span, self.func, *arg_list)
-        if len(self.loop_vars) != len(self.loop_info):
+        if len(loop_var_names) != len(self.loop_info):
             self.context.report_error(
-                f"Inconsistent number of vars and loops, got {len(self.loop_vars)} "
+                f"Inconsistent number of vars and loops, got {len(loop_var_names)} "
                 + f"vs {len(self.loop_info)}",
                 self.node.span,
             )
+        # generate loop vars
+        self.loop_vars = []
+        for name, lv_span, li in zip(loop_var_names, spans, self.loop_info):
+            if not li.begin.dtype.startswith("int"):
+                raise NotImplementedError(f"Unsupported dtype in loop begin: {li.begin.dtype}")
+            if not li.extent.dtype.startswith("int"):
+                raise NotImplementedError(f"Unsupported dtype in loop extent: {li.extent.dtype}")
+            dtype = "int64" if "int64" in [li.begin.dtype, li.extent.dtype] else "int32"
+            self.loop_vars.append(tvm.te.var(name, dtype=dtype, span=lv_span))
+
         for loop_var, loop_info in zip(self.loop_vars, self.loop_info):
             context.update_symbol(loop_var.name, loop_var, node)
             context.loop_stack[loop_var] = Range.from_min_extent(loop_info.begin, loop_info.extent)

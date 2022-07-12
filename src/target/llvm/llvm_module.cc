@@ -23,13 +23,50 @@
  */
 #ifdef TVM_LLVM_VERSION
 
+#include "llvm_module.h"
+
+#include <dmlc/io.h>
+#include <llvm/ADT/SmallString.h>
+#include <llvm/ADT/StringRef.h>
+#include <llvm/Bitcode/BitcodeWriter.h>
+#include <llvm/ExecutionEngine/ExecutionEngine.h>
+#include <llvm/ExecutionEngine/MCJIT.h>  // Force linking of MCJIT
+#include <llvm/IR/DataLayout.h>
+#include <llvm/IR/Function.h>
+#include <llvm/IR/Intrinsics.h>
+#include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/LegacyPassManager.h>
+#include <llvm/IR/MDBuilder.h>
+#include <llvm/IR/Metadata.h>
+#include <llvm/IR/Module.h>
+#include <llvm/IR/Verifier.h>
+#include <llvm/IRReader/IRReader.h>
+#include <llvm/Support/FileSystem.h>
+#include <llvm/Support/SourceMgr.h>
+#include <llvm/Support/raw_ostream.h>
+#include <llvm/Target/TargetMachine.h>
+#include <llvm/Target/TargetOptions.h>
+#include <llvm/Transforms/Utils/Cloning.h>
 #include <tvm/ir/module.h>
 #include <tvm/relay/runtime.h>
+#include <tvm/runtime/container/array.h>
+#include <tvm/runtime/container/string.h>
+#include <tvm/runtime/metadata.h>
+#include <tvm/runtime/module.h>
+#include <tvm/runtime/object.h>
 #include <tvm/runtime/packed_func.h>
 #include <tvm/runtime/registry.h>
 #include <tvm/target/codegen.h>
+#include <tvm/target/target.h>
 
+#include <algorithm>
+#include <memory>
 #include <mutex>
+#include <sstream>
+#include <string>
+#include <system_error>
+#include <utility>
+#include <vector>
 
 #include "../../runtime/file_utils.h"
 #include "../../runtime/library_module.h"
@@ -56,7 +93,7 @@ class LLVMModuleNode final : public runtime::ModuleNode {
     }
   }
 
-  const char* type_key() const { return "llvm"; }
+  const char* type_key() const final { return "llvm"; }
 
   PackedFunc GetFunction(const std::string& name, const ObjectPtr<Object>& sptr_to_self) final {
     if (name == "__tvm_is_system_module") {
@@ -69,24 +106,9 @@ class LLVMModuleNode final : public runtime::ModuleNode {
       return PackedFunc(nullptr);
     } else if (name == "get_const_vars") {
       return PackedFunc(nullptr);
-    } else if (name == "_get_target_triple") {
-      std::ostringstream target_triple_ss;
-      target_triple_ss << tm_->getTargetTriple().str();
-      // getTargetTriple() doesn't include other flags besides the triple. Add back flags which are
-      // important for ModulePackImportsToLLVM.
-      if (tm_->Options.FloatABIType == llvm::FloatABI::ABIType::Soft) {
-        target_triple_ss << " -mfloat-abi=soft";
-      }
-      std::string mabi = tm_->Options.MCOptions.ABIName;
-      if (!mabi.empty()) {
-        target_triple_ss << " -mabi=" << mabi;
-      }
-      llvm::StringRef mcpu = tm_->getTargetCPU();
-      if (!mcpu.empty() && mcpu != "generic") {
-        target_triple_ss << " -mcpu=" << mcpu.str();
-      }
-      std::string target_triple = target_triple_ss.str();
-      return PackedFunc([target_triple](TVMArgs args, TVMRetValue* rv) { *rv = target_triple; });
+    } else if (name == "_get_target_string") {
+      std::string target_string = LLVMTargetToString(target_);
+      return PackedFunc([target_string](TVMArgs args, TVMRetValue* rv) { *rv = target_string; });
     }
     if (ee_ == nullptr) LazyInitJIT();
 
@@ -221,26 +243,12 @@ class LLVMModuleNode final : public runtime::ModuleNode {
 
     std::vector<PrimFunc> funcs;
     std::string entry_func;
-    Map<String, LinkedParam> linked_params;
-    bool found_linked_params = false;
-    bool could_have_linked_params = mod->ShouldLinkParameters();
     relay::Runtime runtime =
         mod->GetAttr<relay::Runtime>(tvm::attr::kRuntime).value_or(relay::Runtime::Create("cpp"));
     bool system_lib = runtime->GetAttr<Bool>("system-lib").value_or(Bool(false));
     bool target_c_runtime = runtime->name == "crt";
 
     for (auto kv : mod->functions) {
-      if (could_have_linked_params &&
-          kv.first->name_hint == ::tvm::runtime::symbol::tvm_lookup_linked_param) {
-        Map<String, ObjectRef> attrs_dict =
-            Downcast<Map<String, ObjectRef>>(kv.second->attrs->dict);
-        CHECK(attrs_dict.find(::tvm::tir::attr::kLinkedParams) != attrs_dict.end())
-            << "no " << ::tvm::tir::attr::kLinkedParams << " attribute found!";
-        linked_params =
-            Downcast<Map<String, LinkedParam>>(attrs_dict[::tvm::tir::attr::kLinkedParams]);
-        found_linked_params = true;
-        continue;
-      }
       if (!kv.second->IsInstance<PrimFuncNode>()) {
         // (@jroesch): we relax constraints here, Relay functions will just be ignored.
         DLOG(INFO) << "Can only lower IR Module with PrimFuncs, but got "
@@ -257,7 +265,7 @@ class LLVMModuleNode final : public runtime::ModuleNode {
       funcs.push_back(f);
     }
     // TODO(@jroesch): follow up on this condition.
-    // ICHECK(funcs.size() > 0 || (could_have_linked_params && found_linked_params));
+    // ICHECK(funcs.size() > 0);
     // TODO(tqchen): remove the entry function behavior as it does not
     // makes sense when we start to use multiple modules.
     cg->Init("TVMMod", tm_.get(), ctx_.get(), system_lib, system_lib, target_c_runtime);
@@ -313,9 +321,6 @@ class LLVMModuleNode final : public runtime::ModuleNode {
       cg->AddMainFunction(entry_func);
     }
 
-    if (found_linked_params) {
-      cg->LinkParameters(linked_params);
-    }
     module_ = cg->Finish();
     module_->addModuleFlag(llvm::Module::Warning, "tvm_target",
                            llvm::MDString::get(*ctx_, LLVMTargetToString(target)));
@@ -359,7 +364,8 @@ class LLVMModuleNode final : public runtime::ModuleNode {
       target_metadata = os.str();
     }
     mptr_ = module_.get();
-    tm_ = GetLLVMTargetMachine(Target(target_metadata));
+    target_ = Target(target_metadata);
+    tm_ = GetLLVMTargetMachine(target_);
   }
 
   void LoadIR(const std::string& file_name) {
@@ -372,6 +378,12 @@ class LLVMModuleNode final : public runtime::ModuleNode {
                  << "line " << err.getLineNo() << ":" << msg;
     }
     Init(std::move(module), ctx);
+  }
+
+  bool IsDSOExportable() const final { return true; }
+
+  bool ImplementsFunction(const String& name, bool query_imports) final {
+    return std::find(function_names_.begin(), function_names_.end(), name) != function_names_.end();
   }
 
  private:
@@ -420,6 +432,7 @@ class LLVMModuleNode final : public runtime::ModuleNode {
     runtime::InitContextFunctions(
         [this](const char* name) { return reinterpret_cast<void*>(GetGlobalAddr(name)); });
   }
+
   // Get global address from execution engine.
   uint64_t GetGlobalAddr(const std::string& name) const {
     // first verifies if GV exists.
@@ -429,6 +442,7 @@ class LLVMModuleNode final : public runtime::ModuleNode {
       return 0;
     }
   }
+
   uint64_t GetFunctionAddr(const std::string& name) const {
     // first verifies if GV exists.
     if (mptr_->getFunction(name) != nullptr) {
@@ -520,12 +534,47 @@ TVM_REGISTER_GLOBAL("codegen.llvm_target_enabled")
 
 TVM_REGISTER_GLOBAL("codegen.codegen_blob")
     .set_body_typed([](std::string data, bool system_lib,
-                       std::string target_triple) -> runtime::Module {
+                       std::string llvm_target_string) -> runtime::Module {
       auto n = make_object<LLVMModuleNode>();
-      auto p = CodeGenBlob(data, system_lib, target_triple);
+      auto p = CodeGenBlob(data, system_lib, llvm_target_string);
       n->Init(std::move(p.first), p.second);
       return runtime::Module(n);
     });
+
+runtime::Module CreateLLVMCppMetadataModule(runtime::metadata::Metadata metadata, Target target,
+                                            tvm::relay::Runtime runtime) {
+  InitializeLLVM();
+  auto tm = GetLLVMTargetMachine(target);
+  bool system_lib = runtime->GetAttr<Bool>("system-lib").value_or(Bool(false));
+  auto ctx = std::make_shared<llvm::LLVMContext>();
+  std::unique_ptr<CodeGenCPU> cg{new CodeGenCPU()};
+
+  cg->Init("TVMMetadataMod", tm.get(), ctx.get(), system_lib, system_lib,
+           false /* target_c_runtime */);
+
+  cg->DefineMetadata(metadata);
+  auto mod = cg->Finish();
+  mod->addModuleFlag(llvm::Module::Warning, "tvm_target",
+                     llvm::MDString::get(*ctx, LLVMTargetToString(target)));
+  mod->addModuleFlag(llvm::Module::Override, "Debug Info Version", llvm::DEBUG_METADATA_VERSION);
+
+  if (tm->getTargetTriple().isOSDarwin()) {
+    mod->addModuleFlag(llvm::Module::Override, "Dwarf Version", 2);
+  }
+
+  std::string verify_errors_storage;
+  llvm::raw_string_ostream verify_errors(verify_errors_storage);
+  LOG_IF(FATAL, llvm::verifyModule(*mod, &verify_errors))
+      << "LLVM module verification failed with the following errors: \n"
+      << verify_errors.str();
+
+  auto n = make_object<LLVMModuleNode>();
+  n->Init(std::move(mod), ctx);
+
+  auto meta_mod = MetadataModuleCreate(metadata);
+  meta_mod->Import(runtime::Module(n));
+  return meta_mod;
+}
 
 runtime::Module CreateLLVMCrtMetadataModule(const Array<runtime::Module>& modules, Target target,
                                             tvm::relay::Runtime runtime) {
@@ -580,4 +629,5 @@ TVM_REGISTER_GLOBAL("runtime.CreateLLVMCrtMetadataModule")
 
 }  // namespace codegen
 }  // namespace tvm
+
 #endif  // TVM_LLVM_VERSION

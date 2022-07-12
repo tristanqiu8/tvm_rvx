@@ -31,14 +31,6 @@ std::string GetTaskName(const TuneContext& task, int task_id) {
   return os.str();
 }
 
-double GetRunMs(const Array<FloatImm>& run_secs) {
-  double total = 0.0;
-  for (const FloatImm& i : run_secs) {
-    total += i->value;
-  }
-  return total * 1e3 / run_secs.size();
-}
-
 struct TaskInfo {
   std::string name;
   double flop = 0.0;
@@ -47,8 +39,10 @@ struct TaskInfo {
   double best_ms = kMaxTime;
   double best_gflops = 0.0;
   int error_count = 0;
+  PackedFunc logging_func;
 
-  explicit TaskInfo(const String& name) : name(name) {}
+  explicit TaskInfo(const String& name, PackedFunc logging_func)
+      : name(name), logging_func(logging_func) {}
 
   void Update(double run_ms) {
     ++trials;
@@ -57,11 +51,11 @@ struct TaskInfo {
       best_round = trials;
       best_gflops = flop / run_ms / 1e6;
     }
-    LOG(INFO) << "[" << name << "] Trial #" << trials   //
-              << std::fixed << std::setprecision(4)     //
-              << ": GFLOPs: " << (flop / run_ms / 1e6)  //
-              << ". Time: " << run_ms << " ms"          //
-              << ". Best GFLOPs: " << best_gflops;
+    TVM_PY_LOG(INFO, logging_func) << "[" << name << "] Trial #" << trials   //
+                                   << std::fixed << std::setprecision(4)     //
+                                   << ": GFLOPs: " << (flop / run_ms / 1e6)  //
+                                   << ". Time: " << run_ms << " ms"          //
+                                   << ". Best GFLOPs: " << best_gflops;
   }
 
   void UpdateError(std::string err, const MeasureCandidate& candidate) {
@@ -70,11 +64,12 @@ struct TaskInfo {
     err = (*f_proc)(err).operator std::string();
     ++error_count;
     ++trials;
-    LOG(INFO) << "[" << name << "] Trial #" << trials  //
-              << std::fixed << std::setprecision(4)    //
-              << ": Error in building: " << err << "\n"
-              << tir::AsTVMScript(candidate->sch->mod()) << "\n"
-              << Concat(candidate->sch->trace().value()->AsPython(false), "\n");
+    TVM_PY_LOG(INFO, logging_func)
+        << "[" << name << "] Trial #" << trials  //
+        << std::fixed << std::setprecision(4)    //
+        << ": Error in building: " << err << "\n"
+        << tir::AsTVMScript(candidate->sch->mod()) << "\n"
+        << Concat(candidate->sch->trace().value()->AsPython(false), "\n");
   }
 };
 
@@ -84,6 +79,7 @@ class EchoStatisticsNode : public MeasureCallbackNode {
              const Array<MeasureCandidate>& measure_candidates,
              const Array<BuilderResult>& builder_results,
              const Array<RunnerResult>& runner_results) final {
+    auto _ = Profiler::TimedScope("MeasureCallback/EchoStatistics");
     if (this->task_info.empty()) {
       SetupTaskInfo(task_scheduler->tasks);
     }
@@ -103,7 +99,7 @@ class EchoStatisticsNode : public MeasureCallbackNode {
         info.UpdateError(err.value(), candidate);
       } else {
         ICHECK(runner_result->run_secs.defined());
-        info.Update(GetRunMs(runner_result->run_secs.value()));
+        info.Update(GetRunMsMedian(runner_result));
       }
     }
   }
@@ -112,7 +108,7 @@ class EchoStatisticsNode : public MeasureCallbackNode {
     task_info.reserve(tasks.size());
     int task_id = 0;
     for (const TuneContext& task : tasks) {
-      task_info.push_back(TaskInfo(GetTaskName(task, task_id)));
+      task_info.push_back(TaskInfo(GetTaskName(task, task_id), task->logging_func));
       TaskInfo& info = task_info.back();
       info.flop = tir::EstimateTIRFlops(task->mod.value());
       ++task_id;

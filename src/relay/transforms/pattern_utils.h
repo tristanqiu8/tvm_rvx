@@ -44,6 +44,7 @@
 #include <utility>
 #include <vector>
 
+#include "../backend/utils.h"
 #include "../op/make_op.h"
 
 namespace tvm {
@@ -183,16 +184,17 @@ inline Expr ExpandBiasToMatchAxis(Expr bias, int target_ndim, const Array<Intege
 }
 
 /*!
- * \brief Check if the call is depthwise conv2d.
+ * \brief Check if the call is depthwise conv3d.
  *
- * \param call The conv2d call.
- * \param param The conv2d attributes.
- * \return Whether it is depthwise_conv2d.
+ * \param call The conv call.
+ * \param param The conv attributes.
+ * \return Whether it is depthwise_conv3d.
  */
-inline bool IsDepthwiseConv2D(const Call& call, const Conv2DAttrs* param,
-                              const Layout& kernel_layout) {
-  static const Layout kOIHW("OIHW");
-  const auto bilayout = tir::BijectiveLayout(kernel_layout, kOIHW);
+template <typename ATTRS>
+inline bool IsDepthwiseConv(const Call& call, ATTRS param, const Layout& kernel_layout) {
+  static const Layout kOIXX =
+      backend::IsOp(call.as<CallNode>(), "nn.conv2d") ? Layout("OIHW") : Layout("OIDHW");
+  const auto bilayout = tir::BijectiveLayout(kernel_layout, kOIXX);
   auto wshape = bilayout.ForwardShape(call->args[1]->type_as<TensorTypeNode>()->shape);
   return tir::is_const_int(wshape[0], param->groups) && tir::is_const_int(wshape[1], 1);
 }
@@ -783,6 +785,16 @@ static inline Expr Tile(Expr data, Array<Integer> reps) { return MakeTile(data, 
 
 static inline Expr BroadCastTo(Expr data, Array<IndexExpr> shape) {
   return MakeBroadCastTo(data, CheckConstantShapeArrayInteger(shape));
+}
+
+inline Expr Hardswish(Expr x) {
+  auto three = MakeConstantScalar(DataType::Float(32), 3.0);
+  auto six = MakeConstantScalar(DataType::Float(32), 6.0);
+  auto x2 = Add(x, three);
+  x2 = Clip(x2, 0.0, 6.0);
+  x2 = Multiply(x, x2);
+  x2 = Divide(x2, six);
+  return x2;
 }
 
 }  // namespace relay

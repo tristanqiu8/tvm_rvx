@@ -24,6 +24,7 @@
 #include <dmlc/thread_local.h>
 #include <tvm/ir/transform.h>
 #include <tvm/node/repr_printer.h>
+#include <tvm/node/structural_hash.h>
 #include <tvm/runtime/device_api.h>
 #include <tvm/runtime/registry.h>
 
@@ -40,6 +41,8 @@ namespace transform {
 using tvm::ReprPrinter;
 using tvm::runtime::TVMArgs;
 using tvm::runtime::TVMRetValue;
+
+TVM_REGISTER_PASS_CONFIG_OPTION("testing.immutable_module", Bool);
 
 struct PassContextThreadLocalEntry {
   /*! \brief The default pass context. */
@@ -264,8 +267,28 @@ IRModule Pass::operator()(IRModule mod, const PassContext& pass_ctx) const {
                << " with opt level: " << pass_info->opt_level;
     return mod;
   }
-  auto ret = node->operator()(std::move(mod), pass_ctx);
+  IRModule ret;
+  if (pass_ctx->GetConfig<Bool>("testing.immutable_module", Bool(false)).value()) {
+    ret = Pass::AssertImmutableModule(mod, node, pass_ctx);
+  } else {
+    ret = node->operator()(std::move(mod), pass_ctx);
+  }
   pass_ctx.InstrumentAfterPass(ret, pass_info);
+  return std::move(ret);
+}
+
+IRModule Pass::AssertImmutableModule(const IRModule& mod, const PassNode* node,
+                                     const PassContext& pass_ctx) {
+  size_t before_pass_hash = tvm::StructuralHash()(mod);
+  ObjectPtr<Object> module_ptr = ObjectRef::GetDataPtr<Object>(mod);
+  IRModule copy_mod = IRModule(module_ptr);
+  IRModule ret = node->operator()(mod, pass_ctx);
+  size_t after_pass_hash = tvm::StructuralHash()(copy_mod);
+  if (before_pass_hash != after_pass_hash) {
+    // The chance of getting a hash conflict between a module and the same module but mutated
+    // must be very low.
+    LOG_FATAL << "Immutable module has been modified in pass: " << node->Info()->name;
+  }
   return std::move(ret);
 }
 
@@ -317,7 +340,6 @@ class ModulePass : public Pass {
 
   TVM_DEFINE_OBJECT_REF_METHODS(ModulePass, Pass, ModulePassNode);
 };
-
 
 PassInfo::PassInfo(int opt_level, String name, tvm::Array<runtime::String> required) {
   auto pass_info = make_object<PassInfoNode>();
@@ -454,15 +476,19 @@ TVM_REGISTER_GLOBAL("transform.Info").set_body([](TVMArgs args, TVMRetValue* ret
 TVM_STATIC_IR_FUNCTOR(ReprPrinter, vtable)
     .set_dispatch<PassInfoNode>([](const ObjectRef& ref, tvm::ReprPrinter* p) {
       auto* node = static_cast<const PassInfoNode*>(ref.get());
-      p->stream << "The meta data of the pass: ";
+      p->stream << "The meta data of the pass - ";
       p->stream << "pass name: " << node->name;
-      p->stream << "opt_level: " << node->opt_level;
-      p->stream << "required passes: ["
-                << "\n";
-      for (const auto& it : node->required) {
-        p->stream << it << ", ";
+      p->stream << ", opt_level: " << node->opt_level;
+      if (node->required.empty()) {
+        p->stream << ", required passes: []\n";
+      } else {
+        p->stream << ", required passes: ["
+                  << "\n";
+        for (const auto& it : node->required) {
+          p->stream << it << ", ";
+        }
+        p->stream << "]\n";
       }
-      p->stream << "]\n";
     });
 
 TVM_REGISTER_NODE_TYPE(ModulePassNode);

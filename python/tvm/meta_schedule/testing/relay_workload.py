@@ -26,7 +26,7 @@ import tvm
 import tvm.relay.testing
 from tvm import relay
 from tvm.ir import IRModule
-from tvm.meta_schedule.integration import ExtractedTask, extract_task_from_relay
+from tvm.meta_schedule import ExtractedTask, extract_task_from_relay
 from tvm.runtime import NDArray, load_param_dict, save_param_dict
 from tvm.target import Target
 
@@ -287,45 +287,6 @@ def extract_from_relay(
         extracted_tasks = list(extracted_tasks)
         _save_cache(cache_dir, filename, extracted_tasks)
     return extracted_tasks
-
-
-def _build_dataset() -> List[Tuple[str, List[int]]]:
-    network_keys = []
-    for name in [
-        "resnet_18",
-        "resnet_50",
-        "mobilenet_v2",
-        "mobilenet_v3",
-        "wide_resnet_50",
-        "resnext_50",
-        "densenet_121",
-        "vgg_16",
-    ]:
-        for batch_size in [1, 4, 8]:
-            for image_size in [224, 240, 256]:
-                network_keys.append((name, [batch_size, 3, image_size, image_size]))
-    # inception-v3
-    for name in ["inception_v3"]:
-        for batch_size in [1, 2, 4]:
-            for image_size in [299]:
-                network_keys.append((name, [batch_size, 3, image_size, image_size]))
-    # resnet3d
-    for name in ["resnet3d_18"]:
-        for batch_size in [1, 2, 4]:
-            for image_size in [112, 128, 144]:
-                network_keys.append((name, [batch_size, 3, image_size, image_size, 16]))
-    # bert
-    for name in ["bert_tiny", "bert_base", "bert_medium", "bert_large"]:
-        for batch_size in [1, 2, 4]:
-            for seq_length in [64, 128, 256]:
-                network_keys.append((name, [batch_size, seq_length]))
-    # dcgan
-    for name in ["dcgan"]:
-        for batch_size in [1, 4, 8]:
-            for image_size in [64]:
-                network_keys.append((name, [batch_size, 3, image_size, image_size]))
-
-    return network_keys
 
 
 SUPPORTED = [

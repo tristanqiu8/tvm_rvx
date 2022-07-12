@@ -75,13 +75,15 @@ inline std::vector<const PrimExpr*> ExprSplitAddition(const PrimExpr& expr) {
 }
 
 // Searches for the following types of expr:
-//   mult_expr = (a1 + a2 + ... + aj + c / (k1 * k2 * ... * ki) * k1 * ... * kt-1 ) * kt * ... * ki
-//   mod_l_expr = c
+//   mult_expr = (a1 + a2 + ... + aj + c1 / (k1 * k2 * ... * ki) * k1 * ... * kt-1 ) * kt * ... * ki
+//   mod_l_expr = c2
 //   mod_r_expr = k1 * k2 * ... * ki
-// If it can be optimized, returns (true, (a1 + a2 + ... + aj) * kt * ... * ki + c)
+//   where c1 ~= c2 mod k1 * k2 * ... * ki
+// If it can be optimized, returns (true, (a1 + a2 + ... + aj) * kt * ... * ki + c1)
 // Currently the we will not search the add/mult combinations exhaustively
 //   as it will take too much computation.
-inline std::pair<bool, PrimExpr> MergeMulModInner(const PrimExpr& mult_expr,
+inline std::pair<bool, PrimExpr> MergeMulModInner(arith::Analyzer* analyzer,
+                                                  const PrimExpr& mult_expr,
                                                   const PrimExpr& mod_l_expr,
                                                   const PrimExpr& mod_r_expr) {
   using namespace tir;
@@ -119,9 +121,10 @@ inline std::pair<bool, PrimExpr> MergeMulModInner(const PrimExpr& mult_expr,
     } else if (inner_div_ptr) {
       PrimExpr overall_mult = mult_inner.get() ? mult_inner * mult_outer : mult_outer;
       if (expr_equal(overall_mult, inner_div_ptr->b) && expr_equal(overall_mult, mod_r_expr) &&
-          expr_equal(inner_div_ptr->a, mod_l_expr)) {
+          analyzer->CanProveEqual(floormod(inner_div_ptr->a - mod_l_expr, mod_r_expr), 0)) {
         // Found!
-        PrimExpr ret = no_opt_sum.get() ? no_opt_sum * mult_outer + mod_l_expr : mod_l_expr;
+        PrimExpr ret =
+            no_opt_sum.get() ? no_opt_sum * mult_outer + inner_div_ptr->a : inner_div_ptr->a;
         return std::make_pair(true, ret);
       } else {
         return std::make_pair(false, PrimExpr());
@@ -204,7 +207,7 @@ inline PrimExpr MergeMulMod(arith::Analyzer* analyzer, const PrimExpr& base) {
     bool inner_find_opt = false;
     while (mult_it != mult_exprs.end()) {
       std::pair<bool, PrimExpr> ret =
-          MergeMulModInner(*mult_it, search_mod_it->first, search_mod_it->second);
+          MergeMulModInner(analyzer, *mult_it, search_mod_it->first, search_mod_it->second);
       if (ret.first) {
         inner_find_opt = true;
         auto temp_mod_it = search_mod_it;
@@ -338,7 +341,7 @@ Buffer Buffer::GetFlattenedBuffer() const {
   // input axis.
   for (size_t i = 0; (i + 1) < self->axis_separators.size(); i++) {
     auto sep = self->axis_separators[i]->value;
-    auto next_sep = self->axis_separators[i]->value;
+    auto next_sep = self->axis_separators[i + 1]->value;
     ICHECK_LT(sep, next_sep) << "Axis separators must be in strictly increasing order.";
   }
   if (self->axis_separators.size()) {
@@ -460,7 +463,6 @@ Buffer Buffer::MakeSlice(Array<PrimExpr> begins, Array<PrimExpr> extents) const 
   begins = SimplifyArray(&ana, begins);
   Array<PrimExpr> elem_offset = n->ElemOffset(begins);
   elem_offset.MutateByApply([&](const PrimExpr& expr) { return ana.Simplify(expr); });
-  ICHECK_EQ(elem_offset.size(), 1) << "MakeSlice currently supports only flat 1-d memory.";
 
   Array<PrimExpr> strides = n->strides;
   if (strides.size() == 0) {
@@ -480,12 +482,24 @@ Buffer Buffer::MakeSlice(Array<PrimExpr> begins, Array<PrimExpr> extents) const 
       return MakeStrideView().MakeSlice(begins, extents);
     }
   }
-  return Buffer(n->data, n->dtype, extents, strides, elem_offset[0], n->name + "_slice",
-                n->data_alignment, 0, n->buffer_type);
+  Buffer slice(n->data, n->dtype, extents, strides, elem_offset[0], n->name + "_slice",
+               n->data_alignment, 0, n->buffer_type);
+
+  // Buffer must be constructed with a singular element offset which means there is no
+  // support for n-dimensional buffers where n > 1.  Insert sentinel value for
+  // ArgBinder::BindBuffer to state that any usage of element offset is invalid
+  // in this case.  This allows for construction of a Buffer with multiple element offsets
+  // but disallows any usage of those element offsets.  See PR #10816 for discussion on
+  // supporting multiple element offsets in TIR Buffer.
+  // TODO(Lunderberg): Remove if/when TIR supports multiple element offsets in TIR Buffer
+  if (elem_offset.size() != 1) {
+    slice.CopyOnWrite()->elem_offset = PrimExpr();
+  }
+  return slice;
 }
 
-PrimExpr Buffer::access_ptr(int access_mask, DataType ptr_type, int content_lanes,
-                            PrimExpr offset) const {
+PrimExpr Buffer::access_ptr(int access_mask, DataType ptr_type, int content_lanes, PrimExpr offset,
+                            Optional<PrimExpr> input_extent) const {
   const BufferNode* self = operator->();
   ICHECK(self != nullptr);
   PrimExpr e_dtype;
@@ -507,6 +521,10 @@ PrimExpr Buffer::access_ptr(int access_mask, DataType ptr_type, int content_lane
     elem_offset = self->elem_offset / make_const(self->elem_offset.dtype(), content_lanes);
   } else {
     e_dtype = tir::TypeAnnotation(self->dtype);
+  }
+
+  if (input_extent.defined()) {
+    extent = input_extent.value();
   }
   Array<PrimExpr> acc_args{e_dtype, self->data, elem_offset, extent,
                            make_const(DataType::Int(32), access_mask)};
@@ -565,6 +583,33 @@ Buffer::Buffer(Var data, DataType dtype, Array<PrimExpr> shape, Array<PrimExpr> 
   }
   n->span = std::move(span);
   data_ = std::move(n);
+}
+
+tir::Buffer BufferWithOffsetAlignment(Array<PrimExpr> shape, DataType dtype, std::string name,
+                                      int data_alignment, int offset_factor, bool compact,
+                                      std::string memory_scope) {
+  DataType storage_dtype = (dtype == DataType::Bool() ? DataType::Int(8) : dtype);
+  auto data = tir::Var(name, PointerType(PrimType(storage_dtype), memory_scope));
+  bool has_any = false;
+  if (!compact) {
+    for (const auto& it : shape) {
+      if (it.as<tir::VarNode>()) {
+        has_any = true;
+        break;
+      }
+    }
+  }
+  tir::BufferType buffer_type = has_any ? tir::kAutoBroadcast : tir::kDefault;
+
+  PrimExpr elem_offset;
+  if (offset_factor != 0) {
+    elem_offset = tir::Var(name + "_elem_offset", shape[0].dtype());
+  } else {
+    elem_offset = PrimExpr();
+  }
+
+  return tir::Buffer(data, dtype, shape, Array<PrimExpr>(), elem_offset, name, data_alignment,
+                     offset_factor, buffer_type);
 }
 
 TVM_STATIC_IR_FUNCTOR(ReprPrinter, vtable)

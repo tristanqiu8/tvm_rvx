@@ -70,8 +70,15 @@ inline ObjectRef CopyTo(ObjectRef src, const DLDevice& dev) {
   if (src->IsInstance<NDArray::ContainerType>()) {
     auto nd_array = Downcast<NDArray>(src);
     // TODO(mbs): Should respect device id also.
-    if (nd_array->device.device_type != dev.device_type) {
-      VLOG(2) << "copying from " << nd_array->device.device_type << " to " << dev.device_type;
+    // TODO(vvchernov): it still does not work for different device id
+    // due to simple implementation of Get() and AllocDataSpace() methods
+    // see tvm/src/runtime/c_runtime_api.cc: L139
+    // tvm/src/runtime/cpu_device_api.cc: L47
+    if (nd_array->device.device_type != dev.device_type ||
+        nd_array->device.device_id != dev.device_id) {
+      VLOG(2) << "copying from " << nd_array->device.device_type << "["
+              << nd_array->device.device_id << "] to " << dev.device_type << "[" << dev.device_id
+              << "]";
       return nd_array.CopyTo(dev);
     }
     return src;
@@ -301,15 +308,11 @@ void VirtualMachine::CreateInputsOrCheckSize(const std::string& func_name, size_
 void VirtualMachine::SetInputTensorWithIndex(std::vector<ObjectRef>& tensors,
                                              const TVMArgValue& inp_tensor, int index, Device dev) {
   if (inp_tensor.type_code() == kTVMDLTensorHandle) {
-    // Automatically convert input DLTensors to NDArray
-    DLTensor* tensor = inp_tensor;
-    std::vector<int64_t> shape;
-    for (int64_t i = 0; i < tensor->ndim; i++) {
-      shape.push_back(tensor->shape[i]);
+    if (NDArray::AbilityOfZeroCopyForDLTensor(inp_tensor, dev)) {
+      tensors[index] = NDArray::FromExternalDLTensor(*inp_tensor);
+    } else {
+      tensors[index] = NDArray::NewFromDLTensor(inp_tensor, dev);
     }
-    NDArray ary = NDArray::Empty(shape, tensor->dtype, dev);
-    ary.CopyFrom(tensor);
-    tensors[index] = ary;
   } else {
     tensors[index] = CopyTo(inp_tensor, dev);
   }

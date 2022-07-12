@@ -74,16 +74,6 @@ void CheckAndUpdateHostConsistency(Target* target, Target* host) {
   *host = (*target)->GetHost().value_or(Target());
 }
 
-void CheckAndUpdateHostConsistency(TargetMap* targets, Target* host) {
-  Map<Integer, Target> new_targets;
-  for (auto& it : *targets) {
-    auto target = it.second;
-    CheckAndUpdateHostConsistency(&target, host);
-    new_targets.Set(it.first, target);
-  }
-  *targets = new_targets;
-}
-
 void CheckAndUpdateHostConsistency(Map<Target, IRModule>* targets, Target* host) {
   Map<Target, IRModule> new_targets;
   for (auto& it : *targets) {
@@ -493,6 +483,31 @@ Target::Target(Target target, Target host) {
   data_ = std::move(n);
 }
 
+Target::Target(TargetKind kind, Optional<ObjectRef> host, String tag, Array<String> keys,
+               Map<String, ObjectRef> attrs) {
+  auto data = runtime::make_object<TargetNode>();
+  data->kind = std::move(kind);
+  data->host = std::move(host);
+  data->tag = std::move(tag);
+  data->keys = std::move(keys);
+  data->attrs = std::move(attrs);
+  data_ = std::move(data);
+}
+
+bool Target::IsExternalCodegen() const {
+  TargetKindAttrMap<Bool> is_external_codegen_map =
+      TargetKind::GetAttrMap<Bool>(tvm::attr::kIsExternalCodegen);
+  TargetKindAttrMap<FTVMRelayToTIR> relay_to_tir_map =
+      TargetKind::GetAttrMap<FTVMRelayToTIR>(tvm::attr::kRelayToTIR);
+  return is_external_codegen_map.get(get()->kind, Bool(false)) ||
+         relay_to_tir_map.count(get()->kind);
+}
+
+bool Target::IsExternalCodegenFor(const Target& that) const {
+  return get()->kind->device_type == that->kind->device_type && IsExternalCodegen() &&
+         !that.IsExternalCodegen();
+}
+
 std::vector<std::string> TargetNode::GetKeys() const {
   std::vector<std::string> result;
   for (auto& expr : keys) {
@@ -789,7 +804,7 @@ ObjectPtr<Object> TargetInternal::FromConfig(std::unordered_map<String, ObjectRe
   // If requested, query attributes from the device.  User-specified
   // parameters take precedence over queried parameters.
   if (attrs.count("from_device")) {
-    int device_id = Downcast<Integer>(attrs.at("from_device"));
+    int device_id = Downcast<Integer>(attrs.at("from_device")).IntValue();
     attrs.erase("from_device");
     auto device_params = QueryDevice(device_id, target.get());
 

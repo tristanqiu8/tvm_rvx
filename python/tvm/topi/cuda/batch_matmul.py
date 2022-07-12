@@ -333,9 +333,6 @@ def schedule_batch_matmul_int8(cfg, outs):
     return s
 
 
-_dp4a = dp4a("shared", "shared", "local")
-
-
 def _schedule_batch_matmul_int8(cfg, s, output):
     input_x, input_y = s[output].op.input_tensors
     if len(input_y.op.input_tensors) == 1 and input_y.op.input_tensors[0] == input_x:
@@ -370,10 +367,7 @@ def _schedule_batch_matmul_int8(cfg, s, output):
     # dp4a tensorize
 
     target = tvm.target.Target.current(allow_none=False)
-    do_tensorize = True
-
-    if "vulkan" in target.keys:
-        do_tensorize = "+dotprod" in target.mattr or target.supports_integer_dot_product
+    do_tensorize = "+dotprod" in target.mattr or target.supports_integer_dot_product
 
     if do_tensorize:
         dtypes = (input_x.dtype, input_y.dtype)

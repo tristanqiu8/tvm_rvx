@@ -161,7 +161,7 @@ def test_reduce_combiner_simplify():
     )
     sum_and_prod = comm_reducer(
         lambda x, y: (x[0] + y[0], x[1] * y[1]),
-        lambda t0, t1: (tvm.tir.const(0, t0), tvm.tir.const(5, t0) - tvm.tir.const(4, t0)),
+        lambda t0, t1: (tvm.tir.const(0, t0), tvm.tir.const(5, t1) - tvm.tir.const(4, t1)),
     )
     some_reducer1 = comm_reducer(
         lambda x, y: (
@@ -331,7 +331,7 @@ def test_simplify_cast():
     # cast(i32, i + j - 100)
     i = te.var("i", dtype="int64")
     j = te.var("j", dtype="int64")
-    ck.analyzer.update(i, tvm.arith.ConstIntBound(0, 2 ** 31 - 1))
+    ck.analyzer.update(i, tvm.arith.ConstIntBound(0, 2**31 - 1))
     ck.analyzer.update(j, tvm.arith.ConstIntBound(0, 10))
     res = tcast("int32", i + j - 100)
     ck.verify(res, res)

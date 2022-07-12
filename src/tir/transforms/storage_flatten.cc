@@ -887,6 +887,9 @@ class BufferBindUnwrapper : public StmtExprMutator {
   }
 
   PrimExpr VisitExpr_(const VarNode* op) final {
+    ICHECK(!illegal_vars_.count(op)) << "Variable " << op->name_hint << " is not well defined.  "
+                                     << "(e.g. use of buffer.elem_offset for a non-flat buffer)";
+
     auto it = var_remap_.find(op);
     if (it != var_remap_.end()) {
       return it->second;
@@ -1105,11 +1108,22 @@ class BufferBindUnwrapper : public StmtExprMutator {
       view = view.MakeStrideView();
     }
 
+    // Match integer bits of source->elem_offset and view->elem_offset
+    // as is required by ArgBinder::Bind_
+    if (view->elem_offset.defined() && source->elem_offset.dtype() != view->elem_offset.dtype()) {
+      view.CopyOnWrite()->elem_offset = cast(source->elem_offset.dtype(), view->elem_offset);
+    }
+
     // Bind any variables that reference the view (e.g. elem_offset,
     // strides, shape).  Pass fuzzy_match=false, because all shape
     // transformations should have been handled in
     // BufferShapeLegalize.
     binder.BindBuffer(source, view, source->name, false);
+    if (auto* elem_offset_var = source->elem_offset.as<VarNode>()) {
+      if (!view->elem_offset.defined()) {
+        illegal_vars_.insert(elem_offset_var);
+      }
+    }
 
     // Apply the remaps
     Stmt body = op->body;
@@ -1162,6 +1176,8 @@ class BufferBindUnwrapper : public StmtExprMutator {
   // The buffer assignment map
   // Variable remap
   std::unordered_map<const VarNode*, PrimExpr> var_remap_;
+  // Variables that may not occur within the body.
+  std::unordered_set<const VarNode*> illegal_vars_;
   // Buffer map
   std::unordered_map<const BufferNode*, BufferEntry> buf_map_;
   // Set of vars that have occurred in an AllocateNode, but haven't
@@ -1423,7 +1439,7 @@ class StorageFlattener : public StmtExprMutator {
                  << op->buffer_var->name_hint;
     }
     return AllocateConst(stmt->buffer_var, stmt->dtype, FlattenExtents(stmt), data_or_idx,
-                         stmt->body, stmt->span);
+                         stmt->body, stmt->annotations, stmt->span);
   }
 
   Stmt VisitStmt_(const LetStmtNode* op) final {
