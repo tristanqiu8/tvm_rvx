@@ -11,11 +11,11 @@ y = relay.var("y", shape=(1, 4), dtype=data_dtype)
 z = relay.qnn.op.add(
         lhs=x,
         rhs=y,
-        lhs_scale=relay.const(0.00784314, "float32"),
+        lhs_scale=relay.const(0.25, "float32"),
         lhs_zero_point=relay.const(127, "int32"),
-        rhs_scale=relay.const(0.00784314, "float32"),
+        rhs_scale=relay.const(0.25, "float32"),
         rhs_zero_point=relay.const(127, "int32"),
-        output_scale=relay.const(0.00784314, "float32"),
+        output_scale=relay.const(0.25, "float32"),
         output_zero_point=relay.const(127, "int32"),
     )
 
