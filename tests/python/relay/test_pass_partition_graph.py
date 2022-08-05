@@ -919,7 +919,11 @@ def test_mixed_single_multiple_outputs():
 
 def test_dnnl_fuse():
     dnnl_patterns = get_pattern_table("dnnl")
-    dnnl_pat_dic = dict(dnnl_patterns)
+    valid_pats = list()
+    for pattern in dnnl_patterns:
+        if len(pattern) == 2:
+            valid_pats.append(pattern)
+    dnnl_pat_dic = dict(valid_pats)
     (
         conv2d_bias_relu_pat,
         conv2d_bias_sigmoid_pat,
@@ -1055,8 +1059,8 @@ def test_dnnl_fuse():
     def test_partition_mobilenet():
         mod, params = relay.testing.mobilenet.get_workload()
         mod = get_partitoned_mod(mod, params, dnnl_patterns)
-        # 27 fused conv + bn + relu, one dense and one softmax
-        assert len(mod.functions) - 1 == 29  # -1 for main
+        # 27 fused conv + bn + relu, one dense, one softmax and one global_avg_pooling
+        assert len(mod.functions) - 1 == 30  # -1 for main
 
     def test_exec(mod, params, ref_mod, ref_params, out_shape):
         ishape = (1, 3, 224, 224)

@@ -18,6 +18,7 @@
 """Unit tests for various models and operators"""
 from contextlib import suppress
 import os
+import platform
 import sys
 from time import time
 
@@ -1364,6 +1365,18 @@ def test_forward_transpose():
     verify_model(Transpose1().float().eval(), input_data=input_data)
     verify_model(Transpose2().float().eval(), input_data=input_data)
     verify_model(Transpose3().float().eval(), input_data=input_data)
+
+
+@tvm.testing.uses_gpu
+def test_forward_numpy_T():
+    torch.set_grad_enabled(False)
+    input_shape = [1, 3, 10, 10]
+
+    def test_fn(x):
+        return x.T
+
+    input_data = torch.rand(input_shape).float()
+    verify_model(test_fn, input_data=input_data)
 
 
 @tvm.testing.uses_gpu
@@ -4048,6 +4061,10 @@ def test_forward_pretrained_bert_base_uncased():
     print("TVM   top-1 id: {}, token: {}".format(tvm_pred_idx, tvm_pred_token))
 
 
+@pytest.mark.skipif(
+    platform.machine() == "aarch64",
+    reason="Currently failing on AArch64",
+)
 def test_convert_torch_script_with_input_types():
     def model_fn(x, y):
         x = x.to(dtype=torch.int32)
@@ -4542,6 +4559,71 @@ def test_mod():
     for test_fn in [test_fmod, test_remainder]:
         verify_model(test_fn, [torch.tensor([-3.0, -2, -1, 1, 2, 3]), torch.tensor(2)])
         verify_model(test_fn, [torch.tensor([1, 2, 3, 4, 5]), torch.tensor(-1.5)])
+
+
+def test_softmax_fuse():
+    # https://github.com/apache/tvm/issues/12001
+    class Model(torch.nn.Module):
+        def __init__(self, nchwc_post_op=False) -> None:
+            super().__init__()
+            self.conv = torch.nn.Conv2d(3, 3, (1, 1), 1)
+            self.nchwc_post_op = nchwc_post_op
+
+        @torch.no_grad()
+        def forward(self, x):
+            t0a = self.conv(x)
+            t0b = torch.floor(x)
+            t2b = torch.softmax(t0a, dim=2)
+
+            if self.nchwc_post_op:
+                t3a = t0a - t0b
+                t4a = t2b - t0b
+                t6a = t3a + t4a
+                return t6a
+
+            return t2b + 1
+
+    sh = [3, 3, 10, 1]
+    inp = torch.ones(*sh, dtype=torch.float32)
+
+    for model in [Model(nchwc_post_op=False).eval(), Model(nchwc_post_op=True).eval()]:
+        output_torch = model(inp).numpy()
+
+        mod, params = relay.frontend.from_pytorch(torch.jit.trace(model, inp), [("inp0", sh)])
+
+        with tvm.transform.PassContext(opt_level=4):
+            out = (
+                relay.create_executor("graph", mod, params=params)
+                .evaluate()(inp0=inp.numpy())
+                .numpy()
+            )
+
+        tvm.testing.assert_allclose(out, output_torch, rtol=1e-5, atol=1e-5)
+
+
+@tvm.testing.uses_gpu
+def test_lerp():
+    def test_fn(x, y, w):
+        return torch.lerp(x, y, w)
+
+    input_shape = [16]
+    x = torch.rand(input_shape).float()
+    y = torch.rand(input_shape).float()
+    w = torch.rand(input_shape).float()
+
+    # weight can be tensor or scalar
+    verify_model(test_fn, [x, y, w])
+    verify_model(test_fn, [x, y, w[0]])
+
+
+def test_trilu():
+    def _test_trilu(op, diagonal):
+        return lambda inp: op(inp, diagonal)
+
+    for op in [torch.triu, torch.tril]:
+        verify_model(_test_trilu(op, 0), [torch.rand(size=[3, 3])])
+        verify_model(_test_trilu(op, 1), [torch.rand(size=[6, 6])])
+        verify_model(_test_trilu(op, -2), [torch.rand(size=[6, 6])])
 
 
 if __name__ == "__main__":

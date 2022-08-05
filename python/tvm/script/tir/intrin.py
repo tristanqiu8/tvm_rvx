@@ -138,6 +138,11 @@ def truncmod(x, y, span):
 
 
 @register
+def ceildiv(x, y, span):
+    return tvm.tir.ceildiv(x, y, span)
+
+
+@register
 def abs(x, span):
     return tvm.tir.abs(x, span)
 
@@ -210,6 +215,11 @@ def opaque_axis(begin, end, span):
 @register
 def Select(cond, if_body, else_body, span):  # pylint: disable=invalid-name
     return tvm.tir.Select(cond, if_body, else_body, span)
+
+
+@register
+def Let(var, value, body, span):  # pylint: disable=invalid-name
+    return tvm.tir.Let(var, value, body, span)
 
 
 @register

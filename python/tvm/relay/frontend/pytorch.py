@@ -23,7 +23,6 @@ import functools
 import itertools
 import math
 import sys
-import logging
 
 import numpy as np
 import tvm
@@ -319,30 +318,15 @@ class PyTorchOpConverter:
         (dtype,) = input_types
         return _op.power(inputs[0], _expr.const(2, dtype))
 
-    def tril(self, inputs, input_types):
-        data = inputs[0]
-        if len(inputs) == 2:
-            k_value = inputs[1]
-        else:
-            k_value = 0
-        input_shape = self.infer_shape(data)
-        k1, k2 = input_shape[-2:]
-        k1 = k_value + 1
-        diag_input = _op.zeros(input_shape, dtype=input_types[0])
-        return _op.matrix_set_diag(data, diag_input, k=(k1, k2))
+    def lerp(self, inputs, input_types):
+        if len(inputs) != 3:
+            msg = "Wrong number of arguments (%d) to parse." % (len(inputs))
+            raise AssertionError(msg)
 
-    def triu(self, inputs, input_types):
-        data = inputs[0]
-        if len(inputs) == 2:
-            k_value = inputs[1]
-        else:
-            k_value = 0
-        input_shape = self.infer_shape(data)
-        k1, k2 = input_shape[-2:]
-        k1 = (k1 * -1) - 1
-        k2 = k_value - 1
-        diag_input = _op.zeros(input_shape, dtype=input_types[0])
-        return _op.matrix_set_diag(data, diag_input, k=(k1, k2))
+        start = inputs[0]
+        end = inputs[1]
+        weight = inputs[2]
+        return start + weight * (end - start)
 
     def arange(self, inputs, input_types):
         def _get_value(val, dtype):
@@ -1384,6 +1368,16 @@ class PyTorchOpConverter:
             axes = inputs[1]
         return _op.transform.transpose(data, axes)
 
+    def numpy_T(self, inputs, input_types):
+        data = inputs[0]
+        shape = self.infer_shape(data)
+        if len(shape) != 2:
+            logger.warning(
+                "The use of Tensor.T on tensors of dimensions != 2 is deprecated"
+                "and will be removed in a future release of PyTorch."
+            )
+        return _op.transform.transpose(data)
+
     def flatten(self, inputs, input_types):
         data = inputs[0]
         start = int(inputs[1])
@@ -1567,7 +1561,7 @@ class PyTorchOpConverter:
             assert len(inputs) == 3, "Input quant param not found in op inputs"
             input_scale = _expr.const(inputs[1])
             input_zero_point = _expr.const(inputs[2])
-            return qnn_torch.apply_with_fp32_fallback(data, input_scale, input_zero_point, func)
+            return qnn_torch.quantized_sigmoid(data, input_scale, input_zero_point)
 
         return func(data)
 
@@ -2347,7 +2341,7 @@ class PyTorchOpConverter:
         if len(inputs) > 12:
             strides_offset = 5
             bias = inputs[4]
-            logging.warning("mask argument in deformable conv2d is not supported and ignored")
+            logger.warning("mask argument in deformable conv2d is not supported and ignored")
         else:
             strides_offset = 4
             bias = inputs[3]
@@ -3386,6 +3380,12 @@ class PyTorchOpConverter:
             inputs[0], grid, interpolate_str, layout, padding_mode_str, align_corners
         )
 
+    def trilu(self, inputs, input_types, mode):
+        data = inputs[0]
+        k = inputs[1] if inputs[1] else 0
+        upper = True if mode == "triu" else False
+        return _op.trilu(data, k, upper)
+
     # Operator mappings
     def create_convert_map(self):
         self.convert_map = {
@@ -3403,6 +3403,7 @@ class PyTorchOpConverter:
             "aten::stft": self.stft,
             "aten::mul": self.make_elemwise("multiply"),
             "aten::pow": self.make_elemwise("power"),
+            "aten::lerp": self.lerp,
             "aten::arange": self.arange,
             "aten::meshgrid": self.meshgrid,
             "aten::div": self.make_elemwise("divide"),
@@ -3480,6 +3481,7 @@ class PyTorchOpConverter:
             "aten::group_norm": self.group_norm,
             "aten::transpose": self.transpose,
             "aten::t": self.transpose,
+            "aten::numpy_T": self.numpy_T,
             "aten::flatten": self.flatten,
             "aten::addmm": self.addmm,
             "aten::size": self.size,
@@ -3546,8 +3548,8 @@ class PyTorchOpConverter:
             "aten::sqrt": self.make_unary("sqrt"),
             "aten::rsqrt": self.make_unary("rsqrt"),
             "aten::square": self.square,
-            "aten::tril": self.tril,
-            "aten::triu": self.triu,
+            "aten::tril": functools.partial(self.trilu, mode="tril"),
+            "aten::triu": functools.partial(self.trilu, mode="triu"),
             "aten::ceil": self.make_unary("ceil"),
             "aten::floor": self.make_unary("floor"),
             "aten::round": self.make_unary("round"),

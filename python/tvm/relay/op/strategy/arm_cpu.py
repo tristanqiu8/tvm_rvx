@@ -276,13 +276,15 @@ def conv2d_NCHWc_strategy_arm_cpu(attrs, inputs, out_type, target):
     data, kernel = inputs
     if topi.arm_cpu.is_int8_hw_support(data.dtype, kernel.dtype):
         strategy.add_implementation(
-            wrap_compute_conv2d(topi.arm_cpu.conv2d_NCHWc_int8, True, True),
+            wrap_compute_conv2d(
+                topi.arm_cpu.conv2d_NCHWc_int8, need_data_layout=True, need_out_layout=True
+            ),
             wrap_topi_schedule(topi.arm_cpu.schedule_conv2d_NCHWc_int8),
             name="conv2d_NCHWc_int8.arm_cpu",
         )
     else:
         strategy.add_implementation(
-            wrap_compute_conv2d(topi.x86.conv2d_NCHWc, True, True),
+            wrap_compute_conv2d(topi.x86.conv2d_NCHWc, need_data_layout=True, need_out_layout=True),
             wrap_topi_schedule(topi.x86.schedule_conv2d_NCHWc),
             name="conv2d_NCHWc.x86",
         )
@@ -294,7 +296,9 @@ def depthwise_conv2d_NCHWc_strategy_arm_cpu(attrs, inputs, out_type, target):
     """depthwise_conv2d_NCHWc adopted from x86"""
     strategy = _op.OpStrategy()
     strategy.add_implementation(
-        wrap_compute_conv2d(topi.x86.depthwise_conv2d_NCHWc, True, True),
+        wrap_compute_conv2d(
+            topi.x86.depthwise_conv2d_NCHWc, need_data_layout=True, need_out_layout=True
+        ),
         wrap_topi_schedule(topi.x86.schedule_depthwise_conv2d_NCHWc),
         name="depthwise_conv2d_NCHWc.x86",
     )
@@ -470,11 +474,13 @@ def schedule_dense_arm_cpu(attrs, inputs, out_type, target):
     """dense arm cpu strategy"""
     strategy = _op.OpStrategy()
     isa = arm_isa.IsaAnalyzer(target)
-    if isa.has_dsp_support:
+    data, _ = inputs
+
+    if isa.has_dsp_support and data.dtype in ["int8", "int16"]:
         strategy.add_implementation(
-            wrap_compute_dense(topi.nn.dense),
+            wrap_compute_dense(topi.arm_cpu.dense_dsp),
             wrap_topi_schedule(topi.arm_cpu.schedule_dense_dsp),
-            name="dense_dsp",
+            name="dense_dsp.arm_cpu",
         )
     else:
         logger.warning("dense is not optimized for arm cpu.")
@@ -507,7 +513,7 @@ def conv1d_strategy_arm_cpu(attrs, inputs, out_type, target):
             strategy.add_implementation(
                 wrap_compute_conv1d(topi.arm_cpu.conv1d_nwc_dsp),
                 wrap_topi_schedule(topi.arm_cpu.schedule_conv1d_nwc_dsp),
-                name="conv1d_dsp",
+                name="conv1d_dsp.arm_cpu",
             )
         else:
             raise RuntimeError(
