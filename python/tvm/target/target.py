@@ -557,7 +557,7 @@ def bifrost(model="unknown", options=None):
     return Target(" ".join(["opencl"] + opts))
 
 
-def riscv_cpu(model="sifive-u54", options=None):
+def riscv_cpu(model="ri5cy", options=None):
     """Returns a RISC-V CPU target.
     Default: sifive-u54 rv64gc
 
