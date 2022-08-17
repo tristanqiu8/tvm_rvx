@@ -23,10 +23,13 @@ func = relay.Function([x, y], z)
 mod = tvm.IRModule.from_expr(func)
 mod = relay.transform.InferType()(mod)
 
-target = tvm.target.riscv_cpu()
+# target = tvm.target.riscv_cpu()
+target = "llvm -mtriple=riscv64-unknown-elf -mcpu=generic-rv64"
+
 with tvm.transform.PassContext(opt_level=3):
     lib = relay.build(mod, target, params=None)
 
-tmp = utils.tempdir()
-lib_fname = tmp.relpath("net.tar")
-lib.export_library(lib_fname)
+# tmp = utils.tempdir()
+# print(tmp)
+# lib_fname = tmp.relpath("net.tar")
+# lib.export_library(lib_fname)
