@@ -17,20 +17,19 @@
 import collections
 import ctypes
 import json
+import math
+import numpy as np
+import pytest
+import re
 import sys
 
 import tvm
 import tvm.testing
 from tvm import te
+from tvm.contrib import clang, utils
 from tvm.relay.backend import Runtime
-from tvm.contrib import utils, clang
-from tvm.target.codegen import llvm_lookup_intrinsic_id, llvm_get_intrinsic_name
-import tvm.script.tir as T
-import numpy as np
-
-import math
-import re
-import pytest
+from tvm.script import tir as T
+from tvm.target.codegen import llvm_get_intrinsic_name, llvm_lookup_intrinsic_id
 
 
 @tvm.testing.requires_llvm
@@ -855,7 +854,8 @@ def test_llvm_order_functions():
     }
     mod = tvm.IRModule(functions=functions)
     ir_text = tvm.build(mod, None, target="llvm").get_source("ll")
-    matches = re.findall(r"^define[^@]*@([a-zA-Z_][a-zA-Z0-9_]*)", ir_text, re.MULTILINE)
+    # Skip functions whose names start with _.
+    matches = re.findall(r"^define[^@]*@([a-zA-Z][a-zA-Z0-9_]*)", ir_text, re.MULTILINE)
     assert matches == sorted(matches)
 
 

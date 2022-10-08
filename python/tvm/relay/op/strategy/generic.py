@@ -205,6 +205,14 @@ def schedule_lrn(attrs, outs, target):
         return topi.generic.schedule_lrn(outs)
 
 
+# pad
+@generic_func
+def schedule_pad(attrs, outs, target):
+    """Schedule PAD op"""
+    with target:
+        return schedule_injective(attrs, outs, target)
+
+
 # bitpack
 @generic_func
 def schedule_bitpack(attrs, outs, target):
@@ -1818,6 +1826,16 @@ def uniform_strategy(attrs, inputs, out_type, target):
     return strategy
 
 
+# multinomial
+def wrap_compute_multinomial(topi_compute):
+    """Wrap multinomial topi compute"""
+
+    def _compute_multinomial(attrs, inputs, _):
+        return list(topi_compute(inputs[0], inputs[1], attrs.num_samples))
+
+    return _compute_multinomial
+
+
 # sliding_window
 def wrap_compute_sliding_window():
     """Wrap sliding_window topi compute"""
@@ -1848,6 +1866,18 @@ def normal_strategy(attrs, inputs, out_type, target):
         wrap_compute_uniform(topi.random.normal),
         wrap_topi_schedule(topi.generic.schedule_extern),
         name="normal.generic",
+    )
+    return strategy
+
+
+@override_native_generic_func("multinomial_strategy")
+def multinomial_strategy(attrs, inputs, out_type, target):
+    """multinomial generic strategy"""
+    strategy = _op.OpStrategy()
+    strategy.add_implementation(
+        wrap_compute_multinomial(topi.random.multinomial),
+        wrap_topi_schedule(topi.generic.schedule_extern),
+        name="multinomial.generic",
     )
     return strategy
 

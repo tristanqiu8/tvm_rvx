@@ -43,7 +43,7 @@ from .common import AttrCvt, get_relay_op, gru_cell, logger, rnn_cell
 from .common import infer_shape as _infer_shape
 from .common import infer_value as _infer_value
 from .common import infer_value_simulated as _infer_value_simulated
-from .common import lstm_cell, try_infer_value, unbind
+from .common import lstm_cell, try_infer_value, unbind, fold_constant
 from .pytorch_utils import is_version_greater_than, getattr_attr_name
 
 __all__ = ["from_pytorch"]
@@ -348,28 +348,24 @@ class PyTorchOpConverter:
         # - if a dtype is given, start, stop, step are converted to that dtype
         # - if no dtype is given and all args are integral, dtype is int64
         # - if no dtype is given and there is a float arg, dtype is float32
-        if len(inputs) == 5:
-            dtype0 = _get_type(inputs[0], input_types[0])
-            if inputs[1] is not None:
-                dtype = _convert_dtype_value(inputs[1])
-            elif dtype0.startswith("float"):
-                dtype = "float32"
-            else:
-                dtype = "int64"
-            start = _expr.const(0, dtype)
-            stop = _get_value(inputs[0], dtype)
-            step = _expr.const(1, dtype)
-        elif len(inputs) == 7:
-            types = [_get_type(inputs[i], input_types[i]) for i in range(3)]
-            if inputs[3] is not None:
-                dtype = _convert_dtype_value(inputs[3])
+        if len(inputs) in {5, 6, 7}:
+            # inputs look like [_,_,_,dtype,layout,device,requires_grad]
+            # therefore dtype_idx is always the length of inputs minus 4
+            dtype_idx = len(inputs) - 4
+            types = [_get_type(inputs[i], input_types[i]) for i in range(dtype_idx)]
+            if inputs[dtype_idx] is not None:
+                dtype = _convert_dtype_value(inputs[dtype_idx])
             elif any([t.startswith("float") for t in types]):
                 dtype = "float32"
             else:
                 dtype = "int64"
-            start = _get_value(inputs[0], dtype)
-            stop = _get_value(inputs[1], dtype)
-            step = _get_value(inputs[2], dtype)
+
+            # - if len(inputs) == 5, inputs = [stop, dtype, ...]
+            # - if len(inputs) == 6, inputs = [start, stop, dtype, ...]
+            # - if len(inputs) == 7, inputs = [start, stop, step, dtype, ...]
+            start = _get_value(inputs[0], dtype) if len(inputs) > 5 else _expr.const(0, dtype)
+            stop = _get_value(inputs[1 if len(inputs) > 5 else 0], dtype)
+            step = _get_value(inputs[2], dtype) if len(inputs) > 6 else _expr.const(1, dtype)
         else:
             msg = "Unknown number of arguments (%d) to parse." % (len(inputs))
             raise AssertionError(msg)
@@ -563,6 +559,59 @@ class PyTorchOpConverter:
 
         return _op.split(data, indices, dim)
 
+    def tensor_split(self, inputs, input_types):
+        # Reference: https://pytorch.org/docs/stable/generated/torch.tensor_split.html
+        import torch
+
+        if not isinstance(inputs[1], (int, list, tuple, torch.Tensor)):
+            msg = "indices_or_sections type %s could not be parsed in tensor_split op" % (
+                type(inputs[1])
+            )
+            raise AssertionError(msg)
+
+        if isinstance(inputs[1], torch.Tensor) and not (
+            list(inputs[1].shape) == [] or list(inputs[1].shape) == 1
+        ):
+            msg = "indices_or_sections must be a zero-dimensional or one-dimensional long tensor"
+            raise AssertionError(msg)
+
+        if isinstance(inputs[1], int) or (
+            isinstance(inputs[1], torch.Tensor) and list(inputs[1].shape) == []
+        ):
+            data = inputs[0]
+            n = int(inputs[1])
+            dim = int(inputs[2])
+
+            split_size = int(self.infer_shape(data)[dim] / n)
+            split_rest = int(self.infer_shape(data)[dim] % n)
+
+            indices = []
+            split_index = split_size
+            if split_rest == 0:
+                for i in range(n - 1):
+                    indices.append(split_index)
+                    split_index += split_size
+            else:
+                for i in range(split_rest):
+                    indices.append(split_index + 1)
+                    split_index = (i + 1) * (split_index + 1)
+                for i in range(n - split_rest - 1):
+                    split_index += split_size
+                    indices.append(split_index)
+
+            return _op.split(data, indices, dim)
+        else:
+            data = inputs[0]
+            sections = inputs[1]
+            dim = int(inputs[2])
+
+            if isinstance(sections, tuple):
+                sections = list(sections)
+            elif isinstance(sections, torch.Tensor):
+                sections = sections.cpu().numpy().tolist()
+
+            return _op.split(data, sections, dim)
+
     def select(self, inputs, input_types):
         data = inputs[0]
         dim = int(inputs[1])
@@ -676,7 +725,9 @@ class PyTorchOpConverter:
                 tmp.append(_op.cast(_op.expand_dims(dim, axis=0), "int64"))
             size = _op.concatenate(tmp, axis=0)
 
-        out = _op.full(_expr.const(fill_value, dtype=dtype), size, dtype=dtype)
+        if not isinstance(fill_value, _expr.Constant):
+            fill_value = _expr.const(fill_value, dtype=dtype)
+        out = _op.full(fill_value, size, dtype=dtype)
         if need_reshape:
             out = _op.reshape(out, new_shape)
         return out
@@ -739,6 +790,10 @@ class PyTorchOpConverter:
         else:
             dtype = self.default_dtype
         return self.full_impl(data, 0, dtype)
+
+    def zero_(self, inputs, input_types):
+        data = inputs[0]
+        return self.full_impl(self.infer_shape(data), 0, input_types[0])
 
     def zeros_like(self, inputs, input_types):
         data = inputs[0]
@@ -809,6 +864,8 @@ class PyTorchOpConverter:
     def fill_(self, inputs, input_types):
         data = inputs[0]
         fill_value = inputs[1]
+        if not isinstance(fill_value, (bool, int, float, complex)):
+            fill_value = fold_constant(fill_value)
         return self.full_impl(self.infer_shape(data), fill_value, input_types[0])
 
     def linspace(self, inputs, input_types):
@@ -843,6 +900,10 @@ class PyTorchOpConverter:
             input_zero_point = _expr.const(inputs[2], dtype="int32")
             return qnn_torch.quantized_relu(data, input_zero_point)
         return _op.nn.relu(data)
+
+    def relu6(self, inputs, input_types):
+        data = inputs[0]
+        return _op.tensor.clip(data, 0.0, 6.0)
 
     def prelu(self, inputs, input_types):
         # Reference: https://pytorch.org/docs/stable/generated/torch.nn.PReLU.html#torch.nn.PReLU
@@ -911,7 +972,9 @@ class PyTorchOpConverter:
 
     def log_sigmoid(self, inputs, input_types):
         data = inputs[0]
-        return _op.log(_op.tensor.sigmoid(data))
+        mn = _op.minimum(_op.const(0, dtype=input_types[0]), data)
+        z = _op.exp(-_op.abs(data))
+        return mn - self.log1p([z], input_types)
 
     def cross_entropy_loss_with_logits(self, inputs, input_types):
         input = inputs[0]
@@ -1071,13 +1134,17 @@ class PyTorchOpConverter:
     def maxpool_3d(self, inputs, input_types):
         data = inputs[0]
 
+        need_squeeze = False
+        if len(self.get_dims(data)) == 4:
+            need_squeeze = True
+            data = _op.expand_dims(data, 0)
         pool_size = inputs[1]
         strides = inputs[2] if inputs[2] else pool_size
         padding = inputs[3]
         dilation = inputs[4]
         ceil_mode = int(inputs[5])
 
-        return _op.nn.max_pool3d(
+        res = _op.nn.max_pool3d(
             data,
             pool_size=pool_size,
             strides=strides,
@@ -1085,6 +1152,7 @@ class PyTorchOpConverter:
             padding=padding,
             ceil_mode=ceil_mode,
         )
+        return res if not need_squeeze else _op.squeeze(res, [0])
 
     def hardtanh(self, inputs, input_types):
         a = inputs[0]
@@ -1558,10 +1626,8 @@ class PyTorchOpConverter:
             return _op.tensor.sigmoid(x)
 
         if self.is_quantized_tensor(data):
-            assert len(inputs) == 3, "Input quant param not found in op inputs"
-            input_scale = _expr.const(inputs[1])
-            input_zero_point = _expr.const(inputs[2])
-            return qnn_torch.quantized_sigmoid(data, input_scale, input_zero_point)
+            assert len(inputs) == 5, "Input/Ouput quant param not found in op inputs"
+            return qnn_torch.quantized_sigmoid(inputs)
 
         return func(data)
 
@@ -1905,7 +1971,7 @@ class PyTorchOpConverter:
 
         # initialize paddings based on input len
         pad_len = len(self.infer_shape(data)) * 2
-        paddings = [pad_value] * pad_len
+        paddings = [0] * pad_len
 
         if len(pad_list) >= 2:
             paddings[-1] = pad_list[1]
@@ -1925,8 +1991,10 @@ class PyTorchOpConverter:
         for pad in paddings:
             const_paddings.append([])
             for p in pad:
-                if not isinstance(p, int):
+                if isinstance(p, _expr.Expr):
                     p = int(_infer_value(p, {}).numpy())
+                elif not isinstance(p, int):
+                    raise NotImplementedError("pad width should be int/expr")
                 const_paddings[-1].append(p)
                 if p != 0:
                     non_zero_found = True
@@ -1934,12 +2002,11 @@ class PyTorchOpConverter:
         if not non_zero_found:
             return data
         elif mode == "constant":
-            return _op.nn.pad(data, const_paddings, pad_value=inputs[2], pad_mode=mode)
+            return _op.nn.pad(data, const_paddings, pad_value=pad_value, pad_mode=mode)
         else:
             return _op.nn.pad(data, const_paddings, pad_mode=mode)
 
     def pad(self, inputs, input_types):
-
         # mode: Optional default "constant"
         if len(inputs) > 2 and inputs[2] is not None:
             mode = inputs[2]
@@ -1960,7 +2027,7 @@ class PyTorchOpConverter:
         return self.pad_common(mode, pad_value, inputs, input_types)
 
     def constant_pad_nd(self, inputs, input_types):
-        return self.pad_common("constant", 0, inputs, input_types)
+        return self.pad_common("constant", _expr.const(inputs[2]), inputs, input_types)
 
     def reflection_pad1d(self, inputs, input_types):
         return self.pad_common("reflect", 0, inputs, input_types)
@@ -2497,6 +2564,21 @@ class PyTorchOpConverter:
         else:
             dtype = input_types[0]
         return _op.zeros(shape, dtype)
+
+    def new_empty(self, inputs, input_types):
+        size = inputs[1]
+
+        import torch
+
+        if not isinstance(size, (_expr.Expr, list, tuple, torch.Size, np.ndarray)):
+            msg = "Data type %s could not be parsed in empty op" % (type(size))
+            raise AssertionError(msg)
+
+        if inputs[2] is not None:
+            dtype = _convert_dtype_value(inputs[2])
+        else:
+            dtype = input_types[0]
+        return _op.zeros(size, dtype)
 
     def randn(self, inputs, input_types):
         import time  # use current time as seed
@@ -3252,8 +3334,14 @@ class PyTorchOpConverter:
         return (output, _op.stack(hy, 0), _op.stack(cy, 0))
 
     def all_any_common(self, op, inputs, input_types):
-        dim = inputs[1]
-        keepdim = inputs[2]
+        if len(inputs) >= 2:
+            dim = inputs[1]
+        else:
+            dim = None
+        if len(inputs) >= 3:
+            keepdim = inputs[2]
+        else:
+            keepdim = False
         if self.infer_type(inputs[0]).dtype != "bool":
             # The input dtype can be uint8.
             inp = _op.cast(inputs[0], "bool")
@@ -3386,6 +3474,21 @@ class PyTorchOpConverter:
         upper = True if mode == "triu" else False
         return _op.trilu(data, k, upper)
 
+    def multinomial(self, inputs, input_types):
+        probs = inputs[0]
+        num_samples = inputs[1]
+        replacement = inputs[2] if inputs[2] else True
+        assert not (
+            replacement is False and num_samples > 1
+        ), "Multinomial without replacement is not yet supported."
+        # Ideally this seed would be generated by a previous threefry operation.
+        # Eventually we might want to add a global store for random keys.
+        seed = np.random.randint(1e6)
+        key = _op.random.threefry_key(seed)
+        output = _op.random.multinomial(key, probs, num_samples)
+        _, indices = _expr.TupleWrapper(output, 2)
+        return indices
+
     # Operator mappings
     def create_convert_map(self):
         self.convert_map = {
@@ -3416,6 +3519,7 @@ class PyTorchOpConverter:
             "aten::ones": self.ones,
             "aten::ones_like": self.ones_like,
             "aten::zeros": self.zeros,
+            "aten::zero_": self.zero_,
             "aten::zeros_like": self.zeros_like,
             "aten::new_ones": self.new_ones,
             "aten::full": self.full,
@@ -3433,12 +3537,14 @@ class PyTorchOpConverter:
             "aten::slice": self.slice,
             "aten::narrow": self.narrow,
             "aten::split": self.split,
+            "aten::tensor_split": self.tensor_split,
             "aten::split_with_sizes": self.split_with_sizes,
             "aten::select": self.select,
             "aten::take": self.take,
             "aten::where": self.where,
             "aten::topk": self.topk,
             "aten::relu": self.relu,
+            "aten::relu6": self.relu6,
             "aten::prelu": self.prelu,
             "aten::leaky_relu": self.leaky_relu,
             "aten::elu": self.elu,
@@ -3610,6 +3716,7 @@ class PyTorchOpConverter:
             "aten::numel": self.numel,
             "aten::empty": self.empty,
             "aten::empty_like": self.empty_like,
+            "aten::new_empty": self.new_empty,
             "aten::randn": self.randn,
             "aten::bincount": self.bincount,
             "aten::scatter_add": self.scatter_add,
@@ -3647,6 +3754,7 @@ class PyTorchOpConverter:
             "aten::__ixor__": self.make_elemwise("bitwise_xor"),
             "aten::__lshift__": self.make_elemwise("left_shift"),
             "aten::__rshift__": self.make_elemwise("right_shift"),
+            "aten::multinomial": self.multinomial,
         }
 
     def update_convert_map(self, custom_map):

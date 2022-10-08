@@ -24,8 +24,9 @@ namespace meta_schedule {
 /*! \brief Collecting all the blocks */
 class BlockCollector : public tir::StmtVisitor {
  public:
-  static Array<tir::BlockRV> Collect(const tir::Schedule& sch) {  //
-    return BlockCollector(sch).Run();
+  static Array<tir::BlockRV> Collect(const tir::Schedule& sch,
+                                     const runtime::PackedFunc f_block_filter = nullptr) {  //
+    return BlockCollector(sch, f_block_filter).Run();
   }
 
  private:
@@ -48,7 +49,9 @@ class BlockCollector : public tir::StmtVisitor {
     return results;
   }
   /*! \brief Constructor */
-  explicit BlockCollector(const tir::Schedule& sch) : sch_(sch) {}
+  explicit BlockCollector(const tir::Schedule& sch,
+                          const runtime::PackedFunc f_block_filter = nullptr)
+      : sch_(sch), f_block_filter_(f_block_filter) {}
   /*! \brief Override the Stmt visiting behaviour */
   void VisitStmt_(const tir::BlockNode* block) override {
     tir::StmtVisitor::VisitStmt_(block);
@@ -56,11 +59,22 @@ class BlockCollector : public tir::StmtVisitor {
         << "Duplicated block name " << block->name_hint << " in function " << func_name_
         << " not supported!";
     block_names_.insert(block->name_hint);
-    blocks_to_collect_.push_back(block->name_hint);
+
+    // If filter function is provided, use it to selectively collect blocks.
+    // Otherwise collect all blocks.
+    Bool collect_block = Bool(true);
+    if (f_block_filter_ != nullptr) {
+      collect_block = f_block_filter_(GetRef<tir::Block>(block));
+    }
+    if (collect_block) {
+      blocks_to_collect_.push_back(block->name_hint);
+    }
   }
 
   /*! \brief The schedule to be collected */
   const tir::Schedule& sch_;
+  /*! \brief An optional packed func that allows only certain blocks to be collected. */
+  const runtime::PackedFunc f_block_filter_;
   /*! \brief The set of func name and block name pair */
   std::unordered_set<String> block_names_;
   /* \brief The list of blocks to collect in order */
@@ -75,30 +89,29 @@ class BlockCollector : public tir::StmtVisitor {
  * */
 class PostOrderApplyNode : public SpaceGeneratorNode {
  public:
+  /*!
+   * \brief Optional block names to target. If not specified all blocks will have spaces generated.
+   */
+  runtime::PackedFunc f_block_filter_ = nullptr;
   /*! \brief The random state. -1 means using random number. */
   TRandState rand_state_ = -1;
-  /*! \brief The schedule rules to be applied in order. */
-  Array<ScheduleRule> sch_rules_{nullptr};
-  /*! \brief The logging function to use. */
-  PackedFunc logging_func;
 
   void VisitAttrs(tvm::AttrVisitor* v) {
+    SpaceGeneratorNode::VisitAttrs(v);
     // `rand_state_` is not visited
     // `sch_rules_` is not visited
   }
 
   void InitializeWithTuneContext(const TuneContext& context) final {
+    SpaceGeneratorNode::InitializeWithTuneContext(context);
     this->rand_state_ = ForkSeed(&context->rand_state);
-    CHECK(context->sch_rules.defined())
-        << "ValueError: Schedules rules not given in PostOrderApply!";
-    this->sch_rules_ = context->sch_rules;
-    this->logging_func = context->logging_func;
   }
 
-  Array<tir::Schedule> GenerateDesignSpace(const IRModule& mod_) final {
+  Array<tir::Schedule> GenerateDesignSpace(const IRModule& mod) final {
     using ScheduleAndUnvisitedBlocks = std::pair<tir::Schedule, Array<tir::BlockRV>>;
+    CHECK(sch_rules.defined()) << "ValueError: `sch_rules` is not set in PostOrderApply";
     tir::Schedule sch = tir::Schedule::Traced(
-        /*mod=*/mod_,
+        /*mod=*/mod,
         /*rand_state=*/ForkSeed(&this->rand_state_),
         /*debug_mode=*/0,
         /*error_render_level=*/tir::ScheduleErrorRenderLevel::kDetail);
@@ -107,9 +120,9 @@ class PostOrderApplyNode : public SpaceGeneratorNode {
     Array<tir::Schedule> result{sch};
     // Enumerate the schedule rules first because you can
     // always concat multiple schedule rules as one
-    Array<tir::BlockRV> all_blocks = BlockCollector::Collect(sch);
+    Array<tir::BlockRV> all_blocks = BlockCollector::Collect(sch, f_block_filter_);
     Array<Optional<ScheduleRule>> rules{NullOpt};
-    rules.insert(rules.end(), sch_rules_.begin(), sch_rules_.end());
+    rules.insert(rules.end(), sch_rules.value().begin(), sch_rules.value().end());
     for (Optional<ScheduleRule> sch_rule : rules) {
       if (sch_rule.defined()) {
         for (const tir::Schedule& sch : result) {
@@ -123,9 +136,7 @@ class PostOrderApplyNode : public SpaceGeneratorNode {
       result.clear();
       while (!stack.empty()) {
         // get the stack.top()
-        tir::Schedule sch;
-        Array<tir::BlockRV> blocks;
-        std::tie(sch, blocks) = stack.back();
+        auto [sch, blocks] = stack.back();
         stack.pop_back();
         // if all blocks are visited
         if (blocks.empty()) {
@@ -173,12 +184,25 @@ class PostOrderApplyNode : public SpaceGeneratorNode {
     }
     return result;
   }
+
+  SpaceGenerator Clone() const final {
+    ObjectPtr<PostOrderApplyNode> n = make_object<PostOrderApplyNode>(*this);
+    CloneRules(this, n.get());
+    return SpaceGenerator(n);
+  }
   static constexpr const char* _type_key = "meta_schedule.PostOrderApply";
   TVM_DECLARE_FINAL_OBJECT_INFO(PostOrderApplyNode, SpaceGeneratorNode);
 };
 
-SpaceGenerator SpaceGenerator::PostOrderApply() {
+SpaceGenerator SpaceGenerator::PostOrderApply(runtime::PackedFunc f_block_filter,
+                                              Optional<Array<ScheduleRule>> sch_rules,
+                                              Optional<Array<Postproc>> postprocs,
+                                              Optional<Map<Mutator, FloatImm>> mutator_probs) {
   ObjectPtr<PostOrderApplyNode> n = make_object<PostOrderApplyNode>();
+  n->sch_rules = std::move(sch_rules);
+  n->postprocs = std::move(postprocs);
+  n->mutator_probs = std::move(mutator_probs);
+  n->f_block_filter_ = std::move(f_block_filter);
   return SpaceGenerator(n);
 }
 

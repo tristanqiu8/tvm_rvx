@@ -20,7 +20,7 @@ from enum import IntEnum, unique
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 from tvm._ffi import register_object
-from tvm.runtime import Object
+from tvm.runtime import Object, ObjectPath
 from tvm.tir import FloatImm, IntImm
 
 from . import _ffi_api
@@ -29,8 +29,23 @@ from . import _ffi_api
 class Doc(Object):
     """Base class of all Docs"""
 
+    @property
+    def source_paths(self) -> Sequence[ObjectPath]:
+        """
+        The list of object paths of the source IR node.
 
-class ExprDoc(Object):
+        This is used to trace back to the IR node position where
+        this Doc is generated, in order to position the diagnostic
+        message.
+        """
+        return self.__getattr__("source_paths")  # pylint: disable=unnecessary-dunder-call
+
+    @source_paths.setter
+    def source_paths(self, value):
+        return _ffi_api.DocSetSourcePaths(self, value)  # type: ignore # pylint: disable=no-member
+
+
+class ExprDoc(Doc):
     """Base class of all expression Docs"""
 
     def attr(self, name: str) -> "AttrAccessDoc":
@@ -104,6 +119,14 @@ class StmtDoc(Doc):
 
     @property
     def comment(self) -> Optional[str]:
+        """
+        The comment of this doc.
+
+        The actual position of the comment depends on the type of Doc
+        and also the DocPrinter implementation. It could be on the same
+        line as the statement, or the line above, or inside the statement
+        if it spans over multiple lines.
+        """
         # It has to call the dunder method to avoid infinite recursion
         return self.__getattr__("comment")  # pylint: disable=unnecessary-dunder-call
 
@@ -214,32 +237,35 @@ class OperationKind(IntEnum):
     _UnaryStart = 0
     USub = 1
     Invert = 2
-    _UnaryEnd = 3
+    Not = 3
+    _UnaryEnd = 4
 
-    _BinaryStart = 4
-    Add = 5
-    Sub = 6
-    Mult = 7
-    Div = 8
-    FloorDiv = 9
-    Mod = 10
-    Pow = 11
-    LShift = 12
-    RShift = 13
-    BitAnd = 14
-    BitOr = 15
-    BitXor = 16
-    Lt = 17
-    LtE = 18
-    Eq = 19
-    NotEq = 20
-    Gt = 21
-    GtE = 22
-    _BinaryEnd = 23
+    _BinaryStart = 5
+    Add = 6
+    Sub = 7
+    Mult = 8
+    Div = 9
+    FloorDiv = 10
+    Mod = 11
+    Pow = 12
+    LShift = 13
+    RShift = 14
+    BitAnd = 15
+    BitOr = 16
+    BitXor = 17
+    Lt = 18
+    LtE = 19
+    Eq = 20
+    NotEq = 21
+    Gt = 22
+    GtE = 23
+    And = 24
+    Or = 25
+    _BinaryEnd = 26
 
-    _SpecialStart = 24
-    IfThenElse = 25
-    _SpecialEnd = 26
+    _SpecialStart = 27
+    IfThenElse = 28
+    _SpecialEnd = 29
 
     # pylint: enable=invalid-name
 

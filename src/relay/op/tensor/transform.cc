@@ -2617,9 +2617,9 @@ bool StridedSliceRel(const Array<Type>& types, int num_inputs, const Attrs& attr
     return false;
   }
 
-  ICHECK(param->begin) << "strided_slice recieved invalid begin " << param->begin;
-  ICHECK(param->end) << "strided_slice recieved invalid end " << param->end;
-  ICHECK(param->strides) << "strided_slice recieved invalid strides " << param->strides;
+  ICHECK(param->begin) << "strided_slice received invalid begin " << param->begin;
+  ICHECK(param->end) << "strided_slice received invalid end " << param->end;
+  ICHECK(param->strides) << "strided_slice received invalid strides " << param->strides;
 
   auto begin = param->begin.value();
   auto end = param->end.value();
@@ -2982,10 +2982,32 @@ InferCorrectLayoutOutput SplitInferCorrectLayout(const Attrs& attrs,
 
   // If new_in_layouts are defined, this code tries to modify the layout.
   if (new_in_layouts.defined() && old_in_layouts.defined()) {
+    bool divisible = true;
     const auto& sp_dim = old_in_layouts[0][axis];
     auto new_index = new_in_layouts[0].IndexOf(sp_dim);
     param->axis = new_index;
-    ret = new_in_layouts[0];
+    int factor = new_in_layouts[0].FactorOf(sp_dim);
+    if (factor > 1) {
+      if (!param->indices_or_sections.as<IntImmNode>()) {
+        auto ios = Downcast<Array<Integer>>(param->indices_or_sections);
+        Array<Integer> new_ios;
+        for (const auto& v : ios) {
+          const IntImmNode* vint = v.as<IntImmNode>();
+          new_ios.push_back(vint->value / factor);
+          if (vint->value % factor) {
+            divisible = false;
+          }
+        }
+        if (divisible) {
+          param->indices_or_sections = new_ios;
+        }
+      }
+    }
+    if (divisible) {
+      ret = new_in_layouts[0];
+    } else {
+      ret = old_in_layouts[0];
+    }
   } else if (old_in_layouts.defined()) {
     ret = old_in_layouts[0];
   }

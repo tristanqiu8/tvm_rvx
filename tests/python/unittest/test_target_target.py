@@ -15,7 +15,6 @@
 # specific language governing permissions and limitations
 # under the License.
 import json
-import sys
 
 import pytest
 import tvm
@@ -59,7 +58,9 @@ def test_all_targets_device_type_verify():
         if tgt.kind.name not in tvm._ffi.runtime_ctypes.Device.STR2MASK:
             raise KeyError("Cannot find target kind: %s in Device.STR2MASK" % tgt.kind.name)
 
-        assert tgt.kind.device_type == tvm._ffi.runtime_ctypes.Device.STR2MASK[tgt.kind.name]
+        assert (
+            tgt.get_target_device_type() == tvm._ffi.runtime_ctypes.Device.STR2MASK[tgt.kind.name]
+        )
 
 
 def test_target_dispatch():
@@ -161,6 +162,13 @@ def test_target_string_with_spaces():
 
     assert target.attrs["device_name"] == "Name of GPU with spaces"
     assert target.attrs["device_type"] == "discrete"
+
+
+def test_target_llvm_options():
+    target = tvm.target.Target("llvm -cl-opt='-unroll-threshold:uint=100,-unroll-count:uint=3'")
+    assert sorted(target.attrs["cl-opt"]) == sorted(
+        ["-unroll-threshold:uint=100", "-unroll-count:uint=3"]
+    )
 
 
 def test_target_create():

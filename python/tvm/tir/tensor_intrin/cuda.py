@@ -16,13 +16,14 @@
 # under the License.
 # pylint: disable=invalid-name,missing-function-docstring
 """Intrinsics for tensorization on NVIDIA GPU."""
-from typing import Tuple, Dict
+from typing import Dict, Tuple
+
 from tvm.script import tir as T
 from tvm.tir.function import PrimFunc
-from .. import IntImm, Cast
+
 from ..._ffi import register_func
 from ...runtime import convert
-from .. import TensorIntrin
+from .. import Cast, IntImm, TensorIntrin
 
 
 def shared_16x16_to_ldmatrix_32x8_layout(i, j):
@@ -36,7 +37,7 @@ def shared_16x32_to_ldmatrix_32x16_layout(i, j):
 
 
 def shared_32x16_to_ldmatrix_32x16_layout(i, j):
-    thread_id = (i % 4) + 4 * (j % 8)
+    thread_id = (i % 16) // 4 + 4 * (j % 8)
     return thread_id, 8 * (j // 8) + (i // 16) * 4 + i % 4
 
 
@@ -120,12 +121,12 @@ def get_ldmatrix_intrin(k_dim, dtype, is_b, transposed, shared_scope="shared"):
             shared_handle,
             shmem_shape,
             dtype,
-            align=128,
+            align=64,
             offset_factor=16,
             scope=shared_scope,
         )
         warp = T.match_buffer(
-            warp_handle, (WARP_SIZE, local_size), dtype, align=128, offset_factor=16, scope="warp"
+            warp_handle, (WARP_SIZE, local_size), dtype, align=64, offset_factor=16, scope="warp"
         )
 
         with T.block("root"):
@@ -149,13 +150,13 @@ def get_ldmatrix_intrin(k_dim, dtype, is_b, transposed, shared_scope="shared"):
             shared_handle,
             shmem_shape,
             dtype,
-            align=128,
+            align=64,
             offset_factor=16,
             scope=shared_scope,
             strides=[s0, s1],
         )
         warp = T.match_buffer(
-            warp_handle, (WARP_SIZE, local_size), dtype, align=128, offset_factor=16, scope="warp"
+            warp_handle, (WARP_SIZE, local_size), dtype, align=64, offset_factor=16, scope="warp"
         )
 
         with T.block("root"):
@@ -222,13 +223,13 @@ def get_mma_intrin(k_dim, out_dtype, b_transposed):
     @T.prim_func
     def mma_sync_desc(a: T.handle, b: T.handle, c: T.handle) -> None:
         A = T.match_buffer(
-            a, (WARP_SIZE, local_size), in_dtype, align=128, offset_factor=16, scope="warp"
+            a, (WARP_SIZE, local_size), in_dtype, align=64, offset_factor=16, scope="warp"
         )
         B = T.match_buffer(
-            b, (WARP_SIZE, local_size), in_dtype, align=128, offset_factor=16, scope="warp"
+            b, (WARP_SIZE, local_size), in_dtype, align=64, offset_factor=16, scope="warp"
         )
         C = T.match_buffer(
-            c, (WARP_SIZE, local_size_out), out_dtype, align=128, offset_factor=16, scope="warp"
+            c, (WARP_SIZE, local_size_out), out_dtype, align=64, offset_factor=16, scope="warp"
         )
 
         with T.block("root"):
@@ -262,13 +263,13 @@ def get_mma_intrin(k_dim, out_dtype, b_transposed):
     @T.prim_func
     def mma_sync_impl(a: T.handle, b: T.handle, c: T.handle) -> None:
         A = T.match_buffer(
-            a, (WARP_SIZE, local_size), in_dtype, align=128, offset_factor=16, scope="warp"
+            a, (WARP_SIZE, local_size), in_dtype, align=64, offset_factor=16, scope="warp"
         )
         B = T.match_buffer(
-            b, (WARP_SIZE, local_size), in_dtype, align=128, offset_factor=16, scope="warp"
+            b, (WARP_SIZE, local_size), in_dtype, align=64, offset_factor=16, scope="warp"
         )
         C = T.match_buffer(
-            c, (WARP_SIZE, local_size_out), out_dtype, align=128, offset_factor=16, scope="warp"
+            c, (WARP_SIZE, local_size_out), out_dtype, align=64, offset_factor=16, scope="warp"
         )
 
         with T.block("root"):
@@ -489,10 +490,13 @@ TensorIntrin.register(
 ######## WMMA intrinsics ########
 
 
-def get_wmma_fragment_index(buffer, m_dim, n_dim):
+def get_wmma_fragment_index(buffer, stride, m_dim, n_dim):
     """Compute wmma fragment index using elem_offset of the buffer"""
-    frag_size = lift(m_dim * n_dim)
-    return buffer.elem_offset // frag_size + (buffer.elem_offset % frag_size) // n_dim
+    frag_index_m = buffer.elem_offset // stride // m_dim
+    frag_index_n = buffer.elem_offset % stride // n_dim
+
+    num_fragments_per_row = stride // n_dim
+    return frag_index_m * num_fragments_per_row + frag_index_n
 
 
 def get_wmma_load_intrin(
@@ -510,11 +514,9 @@ def get_wmma_load_intrin(
 
     @T.prim_func
     def wmma_load_desc(a: T.handle, c: T.handle) -> None:
-        A = T.match_buffer(
-            a, (m_dim, n_dim), dtype, align=128, offset_factor=16, scope=shared_scope
-        )
+        A = T.match_buffer(a, (m_dim, n_dim), dtype, align=64, offset_factor=16, scope=shared_scope)
         C = T.match_buffer(
-            c, (m_dim, n_dim), dtype, align=128, offset_factor=16, scope=wmma_fragment_scope
+            c, (m_dim, n_dim), dtype, align=64, offset_factor=16, scope=wmma_fragment_scope
         )
         with T.block("root"):
             T.reads(A[0:m_dim, 0:n_dim])
@@ -528,17 +530,25 @@ def get_wmma_load_intrin(
     def wmma_load_impl(a: T.handle, c: T.handle) -> None:
         s1 = T.var("int32")
         s0 = T.var("int32")
+        d1 = T.var("int32")
+        d0 = T.var("int32")
         A = T.match_buffer(
             a,
             (m_dim, n_dim),
             dtype,
-            align=128,
+            align=64,
             offset_factor=16,
             scope=shared_scope,
             strides=[s1, s0],
         )
         C = T.match_buffer(
-            c, (m_dim, n_dim), dtype, align=128, offset_factor=16, scope=wmma_fragment_scope
+            c,
+            (m_dim, n_dim),
+            dtype,
+            align=64,
+            offset_factor=16,
+            scope=wmma_fragment_scope,
+            strides=[d1, d0],
         )
         with T.block("root"):
             T.reads(A[0:m_dim, 0:n_dim])
@@ -549,7 +559,7 @@ def get_wmma_load_intrin(
                     m_dim,
                     n_dim,
                     k_dim,
-                    get_wmma_fragment_index(C, m_dim, n_dim),
+                    get_wmma_fragment_index(C, d1, m_dim, n_dim),
                     A.access_ptr("r"),
                     s1,
                     layout,
@@ -569,7 +579,7 @@ def get_wmma_fill_intrin(
     @T.prim_func
     def wmma_fill_desc(c: T.handle) -> None:
         C = T.match_buffer(
-            c, (m_dim, n_dim), dtype, align=128, offset_factor=16, scope="wmma.accumulator"
+            c, (m_dim, n_dim), dtype, align=64, offset_factor=16, scope="wmma.accumulator"
         )
         with T.block("root"):
             T.reads()
@@ -581,8 +591,16 @@ def get_wmma_fill_intrin(
 
     @T.prim_func
     def wmma_fill_impl(c: T.handle) -> None:
+        d1 = T.var("int32")
+        d0 = T.var("int32")
         C = T.match_buffer(
-            c, (m_dim, n_dim), dtype, align=128, offset_factor=16, scope="wmma.accumulator"
+            c,
+            (m_dim, n_dim),
+            dtype,
+            align=64,
+            offset_factor=16,
+            scope="wmma.accumulator",
+            strides=[d1, d0],
         )
         with T.block("root"):
             T.reads()
@@ -593,7 +611,7 @@ def get_wmma_fill_intrin(
                     m_dim,
                     n_dim,
                     k_dim,
-                    get_wmma_fragment_index(C, m_dim, n_dim),
+                    get_wmma_fragment_index(C, d1, m_dim, n_dim),
                     T.float32(0),
                     dtype="handle",
                 )
@@ -610,9 +628,9 @@ def get_wmma_store_intrin(
     @T.prim_func
     def wmma_store_desc(a: T.handle, c: T.handle) -> None:
         A = T.match_buffer(
-            a, (m_dim, n_dim), dtype, align=128, offset_factor=16, scope="wmma.accumulator"
+            a, (m_dim, n_dim), dtype, align=64, offset_factor=16, scope="wmma.accumulator"
         )
-        C = T.match_buffer(c, (m_dim, n_dim), dtype, align=128, offset_factor=16, scope=scope)
+        C = T.match_buffer(c, (m_dim, n_dim), dtype, align=64, offset_factor=16, scope=scope)
         with T.block("root"):
             T.reads(A[0:m_dim, 0:n_dim])
             T.writes(C[0:m_dim, 0:n_dim])
@@ -625,11 +643,19 @@ def get_wmma_store_intrin(
     def wmma_store_impl(a: T.handle, c: T.handle) -> None:
         s1 = T.var("int32")
         s0 = T.var("int32")
+        d1 = T.var("int32")
+        d0 = T.var("int32")
         A = T.match_buffer(
-            a, (m_dim, n_dim), dtype, align=128, offset_factor=16, scope="wmma.accumulator"
+            a,
+            (m_dim, n_dim),
+            dtype,
+            align=64,
+            offset_factor=16,
+            scope="wmma.accumulator",
+            strides=[d1, d0],
         )
         C = T.match_buffer(
-            c, (m_dim, n_dim), dtype, align=128, offset_factor=16, scope=scope, strides=[s1, s0]
+            c, (m_dim, n_dim), dtype, align=64, offset_factor=16, scope=scope, strides=[s1, s0]
         )
         with T.block("root"):
             T.reads(A[0:m_dim, 0:n_dim])
@@ -640,7 +666,7 @@ def get_wmma_store_intrin(
                     m_dim,
                     n_dim,
                     k_dim,
-                    get_wmma_fragment_index(A, m_dim, n_dim),
+                    get_wmma_fragment_index(A, d1, m_dim, n_dim),
                     C.access_ptr("w"),
                     s1,
                     "row_major",
@@ -671,18 +697,18 @@ def get_wmma_sync_intrin(
     @T.prim_func
     def wmma_sync_desc(a: T.handle, b: T.handle, c: T.handle) -> None:
         A = T.match_buffer(
-            a, (m_dim, k_dim), in_dtype, align=128, offset_factor=16, scope="wmma.matrix_a"
+            a, (m_dim, k_dim), in_dtype, align=64, offset_factor=16, scope="wmma.matrix_a"
         )
         B = T.match_buffer(
             b,
             maybe_swap(k_dim, n_dim),
             in_dtype,
-            align=128,
+            align=64,
             offset_factor=16,
             scope="wmma.matrix_b",
         )
         C = T.match_buffer(
-            c, (m_dim, n_dim), out_dtype, align=128, offset_factor=16, scope="wmma.accumulator"
+            c, (m_dim, n_dim), out_dtype, align=64, offset_factor=16, scope="wmma.accumulator"
         )
 
         with T.block("root"):
@@ -698,19 +724,39 @@ def get_wmma_sync_intrin(
 
     @T.prim_func
     def wmma_sync_impl(a: T.handle, b: T.handle, c: T.handle) -> None:
+        a1 = T.var("int32")
+        a0 = T.var("int32")
+        b1 = T.var("int32")
+        b0 = T.var("int32")
+        c1 = T.var("int32")
+        c0 = T.var("int32")
+
         A = T.match_buffer(
-            a, (m_dim, k_dim), in_dtype, align=128, offset_factor=16, scope="wmma.matrix_a"
+            a,
+            (m_dim, k_dim),
+            in_dtype,
+            align=64,
+            offset_factor=16,
+            scope="wmma.matrix_a",
+            strides=[a1, a0],
         )
         B = T.match_buffer(
             b,
             maybe_swap(k_dim, n_dim),
             in_dtype,
-            align=128,
+            align=64,
             offset_factor=16,
             scope="wmma.matrix_b",
+            strides=[b1, b0],
         )
         C = T.match_buffer(
-            c, (m_dim, n_dim), out_dtype, align=128, offset_factor=16, scope="wmma.accumulator"
+            c,
+            (m_dim, n_dim),
+            out_dtype,
+            align=64,
+            offset_factor=16,
+            scope="wmma.accumulator",
+            strides=[c1, c0],
         )
 
         with T.block("root"):
@@ -719,13 +765,13 @@ def get_wmma_sync_intrin(
             T.evaluate(
                 T.tvm_mma_sync(
                     C.data,
-                    get_wmma_fragment_index(C, m_dim, n_dim),
+                    get_wmma_fragment_index(C, c1, m_dim, n_dim),
                     A.data,
-                    get_wmma_fragment_index(A, m_dim, k_dim),
+                    get_wmma_fragment_index(A, a1, m_dim, k_dim),
                     B.data,
-                    get_wmma_fragment_index(B, b_shape_0, b_shape_1),
+                    get_wmma_fragment_index(B, b1, b_shape_0, b_shape_1),
                     C.data,
-                    get_wmma_fragment_index(C, m_dim, n_dim),
+                    get_wmma_fragment_index(C, c1, m_dim, n_dim),
                     dtype="handle",
                 )
             )
@@ -757,6 +803,18 @@ TensorIntrin.register(
     *get_wmma_sync_intrin(16, 16, 16, "float16", "float16", True),
 )
 
+WMMA_SYNC_16x16x16_s8s8s32_INTRIN = "wmma_sync_16x16x16_s8s8s32"
+TensorIntrin.register(
+    WMMA_SYNC_16x16x16_s8s8s32_INTRIN,
+    *get_wmma_sync_intrin(16, 16, 16, "int8", "int32", False),
+)
+
+WMMA_SYNC_16x16x16_s8s8s32_TRANS_INTRIN = "wmma_sync_16x16x16_s8s8s32_trans"
+TensorIntrin.register(
+    WMMA_SYNC_16x16x16_s8s8s32_TRANS_INTRIN,
+    *get_wmma_sync_intrin(16, 16, 16, "int8", "int32", True),
+)
+
 WMMA_LOAD_16x16x16_F16_A_INTRIN = "wmma_load_16x16x16_f16_a"
 TensorIntrin.register(
     WMMA_LOAD_16x16x16_F16_A_INTRIN,
@@ -781,11 +839,39 @@ TensorIntrin.register(
     *get_wmma_load_intrin(16, 16, 16, "float16", "shared", True, True),
 )
 
+WMMA_LOAD_16x16x16_S8_A_INTRIN = "wmma_load_16x16x16_s8_a"
+TensorIntrin.register(
+    WMMA_LOAD_16x16x16_S8_A_INTRIN,
+    *get_wmma_load_intrin(16, 16, 16, "int8", "shared", False, False),
+)
+
+WMMA_LOAD_16x16x16_S8_B_INTRIN = "wmma_load_16x16x16_s8_b"
+TensorIntrin.register(
+    WMMA_LOAD_16x16x16_S8_B_INTRIN,
+    *get_wmma_load_intrin(16, 16, 16, "int8", "shared", True, False),
+)
+
+WMMA_LOAD_16x16x16_S8_A_TRANS_INTRIN = "wmma_load_16x16x16_s8_a_trans"
+TensorIntrin.register(
+    WMMA_LOAD_16x16x16_S8_A_TRANS_INTRIN,
+    *get_wmma_load_intrin(16, 16, 16, "int8", "shared", False, True),
+)
+
+WMMA_LOAD_16x16x16_S8_B_TRANS_INTRIN = "wmma_load_16x16x16_s8_b_trans"
+TensorIntrin.register(
+    WMMA_LOAD_16x16x16_S8_B_TRANS_INTRIN,
+    *get_wmma_load_intrin(16, 16, 16, "int8", "shared", True, True),
+)
+
+
 WMMA_FILL_16x16x16_F32_INTRIN = "wmma_fill_16x16x16_f32"
 TensorIntrin.register(WMMA_FILL_16x16x16_F32_INTRIN, *get_wmma_fill_intrin(16, 16, 16, "float32"))
 
 WMMA_FILL_16x16x16_F16_INTRIN = "wmma_fill_16x16x16_f16"
 TensorIntrin.register(WMMA_FILL_16x16x16_F16_INTRIN, *get_wmma_fill_intrin(16, 16, 16, "float16"))
+
+WMMA_FILL_16x16x16_S32_INTRIN = "wmma_fill_16x16x16_s32"
+TensorIntrin.register(WMMA_FILL_16x16x16_S32_INTRIN, *get_wmma_fill_intrin(16, 16, 16, "int32"))
 
 WMMA_STORE_16x16x16_F32_SHARED_INTRIN = "wmma_store_16x16x16_f32_shared"
 TensorIntrin.register(
@@ -797,6 +883,11 @@ TensorIntrin.register(
     WMMA_STORE_16x16x16_F16_SHARED_INTRIN, *get_wmma_store_intrin(16, 16, 16, "float16", "shared")
 )
 
+WMMA_STORE_16x16x16_S32_SHARED_INTRIN = "wmma_store_16x16x16_s32_shared"
+TensorIntrin.register(
+    WMMA_STORE_16x16x16_S32_SHARED_INTRIN, *get_wmma_store_intrin(16, 16, 16, "int32", "shared")
+)
+
 WMMA_STORE_16x16x16_F32_GLOBAL_INTRIN = "wmma_store_16x16x16_f32_global"
 TensorIntrin.register(
     WMMA_STORE_16x16x16_F32_GLOBAL_INTRIN, *get_wmma_store_intrin(16, 16, 16, "float32", "global")
@@ -805,6 +896,11 @@ TensorIntrin.register(
 WMMA_STORE_16x16x16_F16_GLOBAL_INTRIN = "wmma_store_16x16x16_f16_global"
 TensorIntrin.register(
     WMMA_STORE_16x16x16_F16_GLOBAL_INTRIN, *get_wmma_store_intrin(16, 16, 16, "float16", "global")
+)
+
+WMMA_STORE_16x16x16_S32_GLOBAL_INTRIN = "wmma_store_16x16x16_s32_global"
+TensorIntrin.register(
+    WMMA_STORE_16x16x16_S32_GLOBAL_INTRIN, *get_wmma_store_intrin(16, 16, 16, "int32", "global")
 )
 
 
@@ -833,14 +929,18 @@ def get_wmma_intrin_group(
         A group of tensor intrinsics.
     """
     assert store_scope in ["global", "shared"]
-    assert in_dtype in ["float16"]
-    assert out_dtype in ["float16", "float32"]
+    assert in_dtype in ["float16", "int8"]
+    assert out_dtype in ["float16", "float32", "int32"]
 
-    load_a_intrins = {"float16": WMMA_LOAD_16x16x16_F16_A_INTRIN}
+    load_a_intrins = {
+        "float16": WMMA_LOAD_16x16x16_F16_A_INTRIN,
+        "int8": WMMA_LOAD_16x16x16_S8_A_INTRIN,
+    }
     load_b_intrins = {
         "float16": WMMA_LOAD_16x16x16_F16_B_TRANS_INTRIN
         if trans_b
-        else WMMA_LOAD_16x16x16_F16_B_INTRIN
+        else WMMA_LOAD_16x16x16_F16_B_INTRIN,
+        "int8": WMMA_LOAD_16x16x16_S8_B_TRANS_INTRIN if trans_b else WMMA_LOAD_16x16x16_S8_B_INTRIN,
     }
     compute_intrins = {
         "float16": WMMA_SYNC_16x16x16_f16f16f16_TRANS_INTRIN
@@ -849,10 +949,14 @@ def get_wmma_intrin_group(
         "float32": WMMA_SYNC_16x16x16_f16f16f32_TRANS_INTRIN
         if trans_b
         else WMMA_SYNC_16x16x16_f16f16f32_INTRIN,
+        "int32": WMMA_SYNC_16x16x16_s8s8s32_TRANS_INTRIN
+        if trans_b
+        else WMMA_SYNC_16x16x16_s8s8s32_INTRIN,
     }
     init_intrins = {
         "float16": WMMA_FILL_16x16x16_F16_INTRIN,
         "float32": WMMA_FILL_16x16x16_F32_INTRIN,
+        "int32": WMMA_FILL_16x16x16_S32_INTRIN,
     }
     store_intrins = {
         "float16": WMMA_STORE_16x16x16_F16_SHARED_INTRIN
@@ -861,6 +965,9 @@ def get_wmma_intrin_group(
         "float32": WMMA_STORE_16x16x16_F32_SHARED_INTRIN
         if store_scope == "shared"
         else WMMA_STORE_16x16x16_F32_GLOBAL_INTRIN,
+        "int32": WMMA_STORE_16x16x16_S32_SHARED_INTRIN
+        if store_scope == "shared"
+        else WMMA_STORE_16x16x16_S32_GLOBAL_INTRIN,
     }
     return {
         "init": init_intrins[out_dtype],

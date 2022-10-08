@@ -27,6 +27,12 @@ namespace printer {
 
 ExprDoc ExprDocNode::Attr(String attr) const { return AttrAccessDoc(GetRef<ExprDoc>(this), attr); }
 
+ExprDoc ExprDocNode::Attr(TracedObject<String> attr) const {
+  auto doc = AttrAccessDoc(GetRef<ExprDoc>(this), attr.Get());
+  doc->source_paths.push_back(attr.GetPath());
+  return std::move(doc);
+}
+
 ExprDoc ExprDocNode::operator[](Array<Doc> indices) const {
   return IndexDoc(GetRef<ExprDoc>(this), indices);
 }
@@ -40,6 +46,8 @@ ExprDoc ExprDocNode::Call(Array<ExprDoc, void> args, Array<String, void> kwargs_
   return CallDoc(GetRef<ExprDoc>(this), args, kwargs_keys, kwargs_values);
 }
 
+ExprDoc ExprDoc::operator[](Array<Doc> indices) const { return (*get())[indices]; }
+
 StmtBlockDoc::StmtBlockDoc(Array<StmtDoc> stmts) {
   ObjectPtr<StmtBlockDocNode> n = make_object<StmtBlockDocNode>();
   n->stmts = stmts;
@@ -49,6 +57,13 @@ StmtBlockDoc::StmtBlockDoc(Array<StmtDoc> stmts) {
 LiteralDoc::LiteralDoc(ObjectRef value) {
   ObjectPtr<LiteralDocNode> n = make_object<LiteralDocNode>();
   n->value = value;
+  this->data_ = std::move(n);
+}
+
+LiteralDoc::LiteralDoc(ObjectRef value, ObjectPath object_path) {
+  ObjectPtr<LiteralDocNode> n = make_object<LiteralDocNode>();
+  n->value = value;
+  n->source_paths.push_back(object_path);
   this->data_ = std::move(n);
 }
 
@@ -217,9 +232,14 @@ ClassDoc::ClassDoc(IdDoc name, Array<ExprDoc> decorators, Array<StmtDoc> body) {
 }
 
 TVM_REGISTER_NODE_TYPE(DocNode);
+TVM_REGISTER_GLOBAL("script.printer.DocSetSourcePaths")
+    .set_body_typed([](Doc doc, Array<ObjectPath> source_paths) {
+      doc->source_paths = source_paths;
+    });
 
 TVM_REGISTER_NODE_TYPE(ExprDocNode);
-TVM_REGISTER_GLOBAL("script.printer.ExprDocAttr").set_body_method<ExprDoc>(&ExprDocNode::Attr);
+TVM_REGISTER_GLOBAL("script.printer.ExprDocAttr")
+    .set_body_method<ExprDoc, ExprDocNode, ExprDoc, String>(&ExprDocNode::Attr);
 TVM_REGISTER_GLOBAL("script.printer.ExprDocIndex")
     .set_body_method<ExprDoc>(&ExprDocNode::operator[]);
 TVM_REGISTER_GLOBAL("script.printer.ExprDocCall")
@@ -236,11 +256,15 @@ TVM_REGISTER_GLOBAL("script.printer.StmtBlockDoc").set_body_typed([](Array<StmtD
 });
 
 TVM_REGISTER_NODE_TYPE(LiteralDocNode);
-TVM_REGISTER_GLOBAL("script.printer.LiteralDocNone").set_body_typed(LiteralDoc::None);
-TVM_REGISTER_GLOBAL("script.printer.LiteralDocInt").set_body_typed(LiteralDoc::Int);
-TVM_REGISTER_GLOBAL("script.printer.LiteralDocBoolean").set_body_typed(LiteralDoc::Boolean);
-TVM_REGISTER_GLOBAL("script.printer.LiteralDocFloat").set_body_typed(LiteralDoc::Float);
-TVM_REGISTER_GLOBAL("script.printer.LiteralDocStr").set_body_typed(LiteralDoc::Str);
+TVM_REGISTER_GLOBAL("script.printer.LiteralDocNone").set_body_typed<LiteralDoc()>(LiteralDoc::None);
+TVM_REGISTER_GLOBAL("script.printer.LiteralDocInt")
+    .set_body_typed<LiteralDoc(int)>(LiteralDoc::Int);
+TVM_REGISTER_GLOBAL("script.printer.LiteralDocBoolean")
+    .set_body_typed<LiteralDoc(bool)>(LiteralDoc::Boolean);
+TVM_REGISTER_GLOBAL("script.printer.LiteralDocFloat")
+    .set_body_typed<LiteralDoc(double)>(LiteralDoc::Float);
+TVM_REGISTER_GLOBAL("script.printer.LiteralDocStr")
+    .set_body_typed<LiteralDoc(const String&)>(LiteralDoc::Str);
 
 TVM_REGISTER_NODE_TYPE(IdDocNode);
 TVM_REGISTER_GLOBAL("script.printer.IdDoc").set_body_typed([](String name) { return IdDoc(name); });

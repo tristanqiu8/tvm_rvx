@@ -21,6 +21,7 @@ python3 -m pylint python/tvm --rcfile="$(dirname "$0")"/pylintrc
 python3 -m pylint vta/python/vta --rcfile="$(dirname "$0")"/pylintrc
 python3 -m pylint tests/python/unittest/test_tvmscript_type.py --rcfile="$(dirname "$0")"/pylintrc
 python3 -m pylint tests/python/contrib/test_cmsisnn --rcfile="$(dirname "$0")"/pylintrc
+python3 -m pylint tests/python/contrib/test_ethosn --rcfile="$(dirname "$0")"/pylintrc
 python3 -m pylint tests/python/relay/aot/*.py --rcfile="$(dirname "$0")"/pylintrc
 python3 -m pylint tests/python/ci --rcfile="$(dirname "$0")"/pylintrc
 python3 -m pylint tests/python/integration/ --rcfile="$(dirname "$0")"/pylintrc
@@ -40,3 +41,16 @@ python3 -m pylint tests/python/contrib/test_hexagon/test_models.py --rcfile="$(d
 python3 -m pylint tests/python/contrib/test_hexagon/test_run_unit_tests.py --rcfile="$(dirname "$0")"/pylintrc
 python3 -m pylint tests/python/contrib/test_hexagon/test_thread_pool.py --rcfile="$(dirname "$0")"/pylintrc
 python3 -m pylint tests/python/contrib/test_hexagon/test_usmp.py --rcfile="$(dirname "$0")"/pylintrc
+
+# tests/python/frontend tests
+python3 -m pylint tests/python/frontend/caffe/test_forward.py --rcfile="$(dirname "$0")"/pylintrc
+python3 -m pylint tests/python/frontend/caffe2/*.py --rcfile="$(dirname "$0")"/pylintrc
+python3 -m pylint tests/python/frontend/darknet/test_forward.py --rcfile="$(dirname "$0")"/pylintrc
+python3 -m pylint tests/python/frontend/coreml/*.py --rcfile="$(dirname "$0")"/pylintrc
+python3 -m pylint tests/python/frontend/keras/test_forward.py --rcfile="$(dirname "$0")"/pylintrc
+python3 -m pylint tests/python/frontend/darknet/test_forward.py --rcfile="$(dirname "$0")"/pylintrc
+python3 -m pylint tests/python/frontend/oneflow/*.py --rcfile="$(dirname "$0")"/pylintrc
+python3 -m pylint tests/python/frontend/tensorflow/test_forward.py --rcfile="$(dirname "$0")"/pylintrc
+python3 -m pylint tests/python/frontend/pytorch/test_forward.py --rcfile="$(dirname "$0")"/pylintrc
+python3 -m pylint tests/python/frontend/tflite/test_forward.py --rcfile="$(dirname "$0")"/pylintrc
+

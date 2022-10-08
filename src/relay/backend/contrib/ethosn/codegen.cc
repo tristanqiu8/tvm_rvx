@@ -22,6 +22,7 @@
  * \brief The Relay -> Arm(R) Ethos(TM)-N command stream compiler.
  */
 #include <tvm/relay/expr_functor.h>
+#include <tvm/runtime/container/string.h>
 #include <tvm/runtime/module.h>
 
 #include "codegen_ethosn.h"
@@ -103,9 +104,9 @@ void InferTensorsVisitor::InferCall(const CallNode* cn) {
     params.input_info = GetTensorInfo(tensor_table_, call);
     err += EthosnAPI::Reshape(call, &params);
     tensor_table_[cn->args[0]] = {params.input_info};
-  } else if (IsEthosnOp(call, "qnn.add")) {
+  } else if (IsEthosnFunc(call, "ethos-n.qnn_add")) {
     AdditionParams params;
-    err += EthosnAPI::Addition(call, &params);
+    err += EthosnAPI::Addition(cn->op.as<FunctionNode>()->body, &params);
     tensor_table_[cn->args[0]] = {params.lhs_info};
     tensor_table_[cn->args[1]] = {params.rhs_info};
   } else if (IsEthosnFunc(call, "ethos-n.qnn_sigmoid")) {
@@ -123,6 +124,10 @@ void InferTensorsVisitor::InferCall(const CallNode* cn) {
   } else if (IsEthosnFunc(call, "ethos-n.qnn_leaky_relu")) {
     LeakyReLUParams params;
     err += EthosnAPI::LeakyReLU(cn->op.as<FunctionNode>()->body, &params);
+    tensor_table_[cn->args[0]] = {params.input_info};
+  } else if (IsEthosnFunc(call, "ethos-n.qnn_conv2d_transpose")) {
+    QnnConv2dTransposeParams params;
+    err += EthosnAPI::QnnConv2dTranspose(cn->op.as<FunctionNode>()->body, &params);
     tensor_table_[cn->args[0]] = {params.input_info};
   } else if (IsEthosnOp(call, "qnn.concatenate")) {
     ConcatenateParams params;
@@ -142,6 +147,18 @@ void InferTensorsVisitor::InferCall(const CallNode* cn) {
     ReluParams params;
     params.input_info = GetTensorInfo(tensor_table_, call);
     err = EthosnAPI::Relu(call, &params);
+    tensor_table_[cn->args[0]] = {params.input_info};
+  } else if (IsEthosnFunc(call, "ethos-n.qnn_requantize")) {
+    RequantizeParams params;
+    err += EthosnAPI::Requantize(cn->op.as<FunctionNode>()->body, &params);
+    tensor_table_[cn->args[0]] = {params.input_info};
+  } else if (IsEthosnFunc(call, "ethos-n.qnn_reinterpret_quantize")) {
+    ReinterpretQuantizationParams params;
+    err += EthosnAPI::ReinterpretQuantize(cn->op.as<FunctionNode>()->body, &params);
+    tensor_table_[cn->args[0]] = {params.input_info};
+  } else if (IsEthosnFunc(call, "ethos-n.qnn_resize")) {
+    ResizeParams params;
+    err += EthosnAPI::Resize(cn->op.as<FunctionNode>()->body, &params);
     tensor_table_[cn->args[0]] = {params.input_info};
   } else {
     err = EthosnError("unknown operator");
@@ -287,7 +304,7 @@ sl::TensorsAndId ConstructNetworkVisitor::HandleCall(const CallNode* cn) {
   } else if (IsEthosnOp(call, "reshape")) {
     if ((err = MakeReshapeLayer(call, &tensor))) ReportFatalError(call, err);
     return MakeOps(tensor);
-  } else if (IsEthosnOp(call, "qnn.add")) {
+  } else if (IsEthosnFunc(call, "ethos-n.qnn_add")) {
     if ((err = MakeAdditionLayer(call, &tensor))) ReportFatalError(call, err);
     return MakeOps(tensor);
   } else if (IsEthosnFunc(call, "ethos-n.qnn_sigmoid")) {
@@ -302,6 +319,9 @@ sl::TensorsAndId ConstructNetworkVisitor::HandleCall(const CallNode* cn) {
   } else if (IsEthosnFunc(call, "ethos-n.qnn_leaky_relu")) {
     if ((err = MakeLeakyReLULayer(call, &tensor))) ReportFatalError(call, err);
     return MakeOps(tensor);
+  } else if (IsEthosnFunc(call, "ethos-n.qnn_conv2d_transpose")) {
+    if ((err = MakeConv2DTransposeLayer(call, &tensor))) ReportFatalError(call, err);
+    return MakeOps(tensor);
   } else if (IsEthosnOp(call, "qnn.concatenate")) {
     if ((err = MakeConcatenateLayer(call, &tensor))) ReportFatalError(call, err);
     return MakeOps(tensor);
@@ -313,6 +333,15 @@ sl::TensorsAndId ConstructNetworkVisitor::HandleCall(const CallNode* cn) {
     return MakeOps(tensor);
   } else if (IsEthosnOp(call, "clip")) {
     if ((err = MakeReluLayer(call, &tensor))) ReportFatalError(call, err);
+    return MakeOps(tensor);
+  } else if (IsEthosnFunc(call, "ethos-n.qnn_requantize")) {
+    if ((err = MakeRequantizeLayer(call, &tensor))) ReportFatalError(call, err);
+    return MakeOps(tensor);
+  } else if (IsEthosnFunc(call, "ethos-n.qnn_reinterpret_quantize")) {
+    if ((err = MakeReinterpretQuantizeLayer(call, &tensor))) ReportFatalError(call, err);
+    return MakeOps(tensor);
+  } else if (IsEthosnFunc(call, "ethos-n.qnn_resize")) {
+    if ((err = MakeResizeLayer(call, &tensor))) ReportFatalError(call, err);
     return MakeOps(tensor);
   } else {
     ReportFatalError(call, EthosnError("unknown operator"));
@@ -383,8 +412,8 @@ EthosnError ConstructNetworkVisitor::MakeFullyConnectedLayer(const Call& call,
     return err;
   }
 
-  auto weights = AddConstant(network_, params.weights_info, params.raw_weights).tensor;
-  auto bias = AddConstant(network_, params.bias_info, params.raw_bias).tensor;
+  auto weights = AddConstant(network_, params.weights_info, params.raw_weights->data).tensor;
+  auto bias = AddConstant(network_, params.bias_info, params.raw_bias->data).tensor;
   try {
     auto input =
         AddReshape(network_, *operand_table_[call->args[0]][0], params.input_info.m_Dimensions)
@@ -453,7 +482,7 @@ EthosnError ConstructNetworkVisitor::MakeReshapeLayer(const Call& call,
 EthosnError ConstructNetworkVisitor::MakeAdditionLayer(const Call& call,
                                                        sl::TensorAndId<sl::Operand>* out) {
   AdditionParams params;
-  if (auto err = EthosnAPI::Addition(call, &params)) {
+  if (auto err = EthosnAPI::Addition(call->op.as<FunctionNode>()->body, &params)) {
     return err;
   }
 
@@ -516,6 +545,24 @@ EthosnError ConstructNetworkVisitor::MakeLeakyReLULayer(const Call& call,
 
   try {
     *out = AddLeakyRelu(network_, *input, params.leaky_relu_info);
+  } catch (const sl::NotSupportedException& e) {
+    return EthosnError(e.what());
+  }
+  return EthosnError();
+}
+
+EthosnError ConstructNetworkVisitor::MakeConv2DTransposeLayer(const Call& call,
+                                                              sl::TensorAndId<sl::Operand>* out) {
+  QnnConv2dTransposeParams params;
+  if (auto err = EthosnAPI::QnnConv2dTranspose(call->op.as<FunctionNode>()->body, &params)) {
+    return err;
+  }
+
+  auto activation = operand_table_[call->args[0]][0];
+  auto weights = AddConstant(network_, params.weights_info, params.raw_weights->data).tensor;
+  auto bias = AddConstant(network_, params.bias_info, params.raw_bias->data).tensor;
+  try {
+    *out = AddTransposeConvolution(network_, *activation, *bias, *weights, params.conv_info);
   } catch (const sl::NotSupportedException& e) {
     return EthosnError(e.what());
   }
@@ -590,6 +637,60 @@ EthosnError ConstructNetworkVisitor::MakeReluLayer(const Call& call,
 
   try {
     *out = AddRelu(network_, *input, params.relu_info);
+  } catch (const sl::NotSupportedException& e) {
+    return EthosnError(e.what());
+  }
+  return EthosnError();
+}
+
+EthosnError ConstructNetworkVisitor::MakeRequantizeLayer(const Call& call,
+                                                         sl::TensorAndId<sl::Operand>* out) {
+  RequantizeParams params;
+  params.input_info = GetTensorInfo(tensor_table_, call);
+  if (auto err = EthosnAPI::Requantize(call->op.as<FunctionNode>()->body, &params)) {
+    return err;
+  }
+
+  auto input = operand_table_[call->args[0]][0];
+
+  try {
+    *out = AddRequantize(network_, *input, params.requantize_info);
+  } catch (const sl::NotSupportedException& e) {
+    return EthosnError(e.what());
+  }
+  return EthosnError();
+}
+
+EthosnError ConstructNetworkVisitor::MakeReinterpretQuantizeLayer(
+    const Call& call, sl::TensorAndId<sl::Operand>* out) {
+  ReinterpretQuantizationParams params;
+  params.input_info = GetTensorInfo(tensor_table_, call);
+  if (auto err = EthosnAPI::ReinterpretQuantize(call->op.as<FunctionNode>()->body, &params)) {
+    return err;
+  }
+
+  auto input = operand_table_[call->args[0]][0];
+
+  try {
+    *out = AddReinterpretQuantization(network_, *input, params.reinterpret_quantize_info);
+  } catch (const sl::NotSupportedException& e) {
+    return EthosnError(e.what());
+  }
+  return EthosnError();
+}
+
+EthosnError ConstructNetworkVisitor::MakeResizeLayer(const Call& call,
+                                                     sl::TensorAndId<sl::Operand>* out) {
+  ResizeParams params;
+  params.input_info = GetTensorInfo(tensor_table_, call);
+  if (auto err = EthosnAPI::Resize(call->op.as<FunctionNode>()->body, &params)) {
+    return err;
+  }
+
+  auto input = operand_table_[call->args[0]][0];
+
+  try {
+    *out = AddResize(network_, *input, params.resize_info);
   } catch (const sl::NotSupportedException& e) {
     return EthosnError(e.what());
   }
@@ -862,6 +963,20 @@ TVM_REGISTER_GLOBAL("relay.ethos-n.support.leaky_relu")
       err += EthosnError(reason);
     });
 
+TVM_REGISTER_GLOBAL("relay.ethos-n.support.conv2d_transpose")
+    .set_body([](tvm::TVMArgs args, tvm::TVMRetValue* rv) {
+      Call call = args[0];
+      QnnConv2dTransposeParams params;
+      auto err = EthosnAPI::QnnConv2dTranspose(call, &params);
+      err += EthosnCompiler::SupportedSetup();
+      char reason[kReasonMaxLength];
+      reason[0] = '\0';
+      *rv = !err && EthosnCompiler::GetSupported()->IsTransposeConvolutionSupported(
+                        params.bias_info, params.weights_info, params.conv_info, params.input_info,
+                        &params.output_info, reason, sizeof(reason));
+      err += EthosnError(reason);
+    });
+
 TVM_REGISTER_GLOBAL("relay.ethos-n.support.concatenate")
     .set_body([](tvm::TVMArgs args, tvm::TVMRetValue* rv) {
       Call call = args[0];
@@ -918,6 +1033,48 @@ TVM_REGISTER_GLOBAL("relay.ethos-n.support.relu")
       err += EthosnError(reason);
     });
 
+TVM_REGISTER_GLOBAL("relay.ethos-n.support.requantize")
+    .set_body([](tvm::TVMArgs args, tvm::TVMRetValue* rv) {
+      Call call = args[0];
+      RequantizeParams params;
+      auto err = EthosnAPI::Requantize(call, &params);
+      err += EthosnCompiler::SupportedSetup();
+      char reason[kReasonMaxLength];
+      reason[0] = '\0';
+      *rv = !err && EthosnCompiler::GetSupported()->IsRequantizeSupported(
+                        params.requantize_info, params.input_info, &params.output_info, reason,
+                        sizeof(reason));
+      err += EthosnError(reason);
+    });
+
+TVM_REGISTER_GLOBAL("relay.ethos-n.support.reinterpret_quantize")
+    .set_body([](tvm::TVMArgs args, tvm::TVMRetValue* rv) {
+      Call call = args[0];
+      ReinterpretQuantizationParams params;
+      auto err = EthosnAPI::ReinterpretQuantize(call, &params);
+      err += EthosnCompiler::SupportedSetup();
+      char reason[kReasonMaxLength];
+      reason[0] = '\0';
+      *rv = !err && EthosnCompiler::GetSupported()->IsReinterpretQuantizationSupported(
+                        params.reinterpret_quantize_info, params.input_info, &params.output_info,
+                        reason, sizeof(reason));
+      err += EthosnError(reason);
+    });
+
+TVM_REGISTER_GLOBAL("relay.ethos-n.support.resize")
+    .set_body([](tvm::TVMArgs args, tvm::TVMRetValue* rv) {
+      Call call = args[0];
+      ResizeParams params;
+      auto err = EthosnAPI::Resize(call, &params);
+      err += EthosnCompiler::SupportedSetup();
+      char reason[kReasonMaxLength];
+      reason[0] = '\0';
+      *rv = !err &&
+            EthosnCompiler::GetSupported()->IsResizeSupported(
+                params.resize_info, params.input_info, &params.output_info, reason, sizeof(reason));
+      err += EthosnError(reason);
+    });
+
 TVM_REGISTER_GLOBAL("relay.ethos-n.query").set_body([](tvm::TVMArgs args, tvm::TVMRetValue* rv) {
 #if defined ETHOSN_HW
   *rv = true;
@@ -926,8 +1083,8 @@ TVM_REGISTER_GLOBAL("relay.ethos-n.query").set_body([](tvm::TVMArgs args, tvm::T
 #endif
 });
 
-TVM_REGISTER_GLOBAL("relay.ethos-n.api.version").set_body_typed([]() -> int {
-  return _ETHOSN_API_VERSION_;
+TVM_REGISTER_GLOBAL("relay.ethos-n.api.version").set_body_typed([]() -> String {
+  return sl::GetLibraryVersion().ToString();
 });
 
 }  // namespace ethosn

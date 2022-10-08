@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.2)
+cmake_minimum_required(VERSION 3.18)
 project(tvm C CXX)
 
 # Utility functions
@@ -67,11 +67,13 @@ tvm_option(USE_ETHOSN "Build with Arm(R) Ethos(TM)-N" OFF)
 tvm_option(USE_CMSISNN "Build with Arm CMSIS-NN" OFF)
 tvm_option(INDEX_DEFAULT_I64 "Defaults the index datatype to int64" ON)
 tvm_option(USE_LIBBACKTRACE "Build libbacktrace to supply linenumbers on stack traces" AUTO)
+tvm_option(BACKTRACE_ON_SEGFAULT "Install a signal handler to print a backtrace on segfault" OFF)
 tvm_option(BUILD_STATIC_RUNTIME "Build static version of libtvm_runtime" OFF)
 tvm_option(USE_PAPI "Use Performance Application Programming Interface (PAPI) to read performance counters" OFF)
 tvm_option(USE_GTEST "Use GoogleTest for C++ sanity tests" AUTO)
 tvm_option(USE_CUSTOM_LOGGING "Use user-defined custom logging, tvm::runtime::detail::LogFatalImpl and tvm::runtime::detail::LogMessageImpl must be implemented" OFF)
 tvm_option(USE_ALTERNATIVE_LINKER "Use 'mold' or 'lld' if found when invoking compiler to link artifact" AUTO)
+tvm_option(USE_CCACHE "Use ccache if found when invoking compiler" AUTO)
 
 # 3rdparty libraries
 tvm_option(DLPACK_PATH "Path to DLPACK" "3rdparty/dlpack/include")
@@ -113,6 +115,7 @@ tvm_option(USE_VITIS_AI "Build with VITIS-AI Codegen support" OFF)
 tvm_option(SUMMARIZE "Print CMake option summary after configuring" OFF)
 tvm_option(USE_CLML "Build with CLML Codegen support" OFF)
 tvm_option(USE_CLML_GRAPH_EXECUTOR "Build with CLML graph runtime" OFF)
+tvm_option(USE_UMA "Build with UMA support" OFF)
 
 # include directories
 include_directories(${CMAKE_INCLUDE_PATH})
@@ -201,7 +204,7 @@ else(MSVC)
       set(TVM_VISIBILITY_FLAG "-fvisibility=hidden")
     endif(HIDE_PRIVATE_SYMBOLS)
   endif ()
-  if (CMAKE_CXX_COMPILER_ID MATCHES "GNU" AND
+  if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND
       CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 7.0)
     set(CMAKE_CXX_FLAGS "-faligned-new ${CMAKE_CXX_FLAGS}")
   endif()
@@ -287,6 +290,7 @@ tvm_file_glob(GLOB_RECURSE COMPILER_SRCS
 tvm_file_glob(GLOB CODEGEN_SRCS
   src/target/*.cc
   src/target/source/*.cc
+  src/target/parsers/*.cc
     )
 
 list(APPEND COMPILER_SRCS ${CODEGEN_SRCS})
@@ -303,6 +307,7 @@ tvm_file_glob(GLOB_RECURSE RELAY_PASS_SRCS
 tvm_file_glob(GLOB RELAY_BACKEND_SRCS
     src/relay/backend/*.cc
     src/relay/backend/vm/*.cc
+    src/relay/backend/aot/*.cc
     )
 tvm_file_glob(GLOB_RECURSE RELAY_IR_SRCS
     src/relay/ir/*.cc
@@ -457,6 +462,11 @@ if(USE_PIPELINE_EXECUTOR)
   list(APPEND RUNTIME_SRCS ${RUNTIME_PIPELINE_SRCS})
 endif(USE_PIPELINE_EXECUTOR)
 
+# Caches the build.
+# Note that ccache-3.x doesn't support nvcc well, so CUDA kernels may never hit the cache and still
+# need to be re-compiled every time. Using ccache 4.0+ can resolve this issue.
+include(cmake/utils/CCache.cmake)
+
 # Module rules
 include(cmake/modules/VTA.cmake)
 include(cmake/modules/StandaloneCrt.cmake)
@@ -498,19 +508,20 @@ include(cmake/modules/contrib/TensorRT.cmake)
 include(cmake/modules/contrib/VitisAI.cmake)
 include(cmake/modules/contrib/Verilator.cmake)
 include(cmake/modules/contrib/CLML.cmake)
+include(cmake/modules/contrib/UMA.cmake)
 include(cmake/modules/Git.cmake)
 include(cmake/modules/LibInfo.cmake)
 include(cmake/modules/RustExt.cmake)
 
 include(CheckCXXCompilerFlag)
 if(NOT MSVC)
-  check_cxx_compiler_flag("-std=c++14" SUPPORT_CXX14)
-  set(CMAKE_CXX_FLAGS "-std=c++14 ${CMAKE_CXX_FLAGS}")
-  set(CMAKE_CUDA_STANDARD 14)
+  check_cxx_compiler_flag("-std=c++17" SUPPORT_CXX17)
+  set(CMAKE_CXX_FLAGS "-std=c++17 ${CMAKE_CXX_FLAGS}")
+  set(CMAKE_CUDA_STANDARD 17)
 else()
-  check_cxx_compiler_flag("/std:c++14" SUPPORT_CXX14)
-  set(CMAKE_CXX_FLAGS "/std:c++14 ${CMAKE_CXX_FLAGS}")
-  set(CMAKE_CUDA_STANDARD 14)
+  check_cxx_compiler_flag("/std:c++17" SUPPORT_CXX17)
+  set(CMAKE_CXX_FLAGS "/std:c++17 ${CMAKE_CXX_FLAGS}")
+  set(CMAKE_CUDA_STANDARD 17)
 endif()
 
 set(LIBINFO_FILE ${CMAKE_CURRENT_LIST_DIR}/src/support/libinfo.cc)
@@ -795,3 +806,5 @@ find_and_set_linker(${USE_ALTERNATIVE_LINKER})
 if(${SUMMARIZE})
   print_summary()
 endif()
+
+dump_options_to_file("${TVM_ALL_OPTIONS}")

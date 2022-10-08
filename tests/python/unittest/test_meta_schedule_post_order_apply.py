@@ -196,6 +196,29 @@ class DoubleScheduleRule(PyScheduleRule):
 
 
 @derived_object
+class TrinityDoubleRule(PyScheduleRule):
+    def _initialize_with_tune_context(self, context: "TuneContext") -> None:
+        pass
+
+    def apply(self, sch: Schedule, block: BlockRV) -> List[Schedule]:
+        if _is_root(sch, block):
+            return [sch]
+        new_sch = sch.copy()
+        i, j = new_sch.get_loops(block=block)
+        i_0, i_1 = new_sch.split(loop=i, factors=[16, 64])
+        j_0, j_1 = new_sch.split(loop=j, factors=[64, 16])
+        new_sch.reorder(i_0, j_0, i_1, j_1)
+        result = [new_sch]
+        new_sch = sch.copy()
+        i, j = new_sch.get_loops(block=block)
+        i_0, i_1 = new_sch.split(loop=i, factors=[2, 512])
+        j_0, j_1 = new_sch.split(loop=j, factors=[2, 512])
+        new_sch.reorder(i_0, j_0, i_1, j_1)
+        result.append(new_sch)
+        return result
+
+
+@derived_object
 class ReorderScheduleRule(PyScheduleRule):
     def _initialize_with_tune_context(self, context: "TuneContext") -> None:
         pass
@@ -220,8 +243,11 @@ def test_meta_schedule_post_order_apply():
         mod=mod,
         target=Target("llvm"),
         task_name="Test Task",
-        space_generator=PostOrderApply(),
-        sch_rules=[WowSoFancyScheduleRule()],
+        space_generator=PostOrderApply(
+            sch_rules=[WowSoFancyScheduleRule()],
+            postprocs=[],
+            mutator_probs={},
+        ),
     )
     post_order_apply = context.space_generator
     schs = post_order_apply.generate_design_space(mod)
@@ -236,8 +262,11 @@ def test_meta_schedule_post_order_apply_double():
         mod=mod,
         target=Target("llvm"),
         task_name="Double Rules Task",
-        space_generator=PostOrderApply(),
-        sch_rules=[DoubleScheduleRule()],
+        space_generator=PostOrderApply(
+            sch_rules=[DoubleScheduleRule()],
+            postprocs=[],
+            mutator_probs={},
+        ),
     )
     post_order_apply = context.space_generator
     schs = post_order_apply.generate_design_space(mod)
@@ -253,8 +282,11 @@ def test_meta_schedule_post_order_apply_multiple():
         mod=mod,
         target=Target("llvm"),
         task_name="Double Rules Task",
-        space_generator=PostOrderApply(),
-        sch_rules=[DoubleScheduleRule(), ReorderScheduleRule()],
+        space_generator=PostOrderApply(
+            sch_rules=[DoubleScheduleRule(), ReorderScheduleRule()],
+            postprocs=[],
+            mutator_probs={},
+        ),
     )
     post_order_apply = context.space_generator
     schs = post_order_apply.generate_design_space(mod)
@@ -270,8 +302,11 @@ def test_meta_schedule_post_order_apply_duplicate_matmul():
         mod=mod,
         target=Target("llvm"),
         task_name="Duplicate Matmul Task",
-        space_generator=PostOrderApply(),
-        sch_rules=[WowSoFancyScheduleRule()],
+        space_generator=PostOrderApply(
+            sch_rules=[WowSoFancyScheduleRule()],
+            postprocs=[],
+            mutator_probs={},
+        ),
     )
     post_order_apply = context.space_generator
     with pytest.raises(
@@ -283,28 +318,6 @@ def test_meta_schedule_post_order_apply_duplicate_matmul():
 
 
 def test_meta_schedule_post_order_apply_remove_block():
-    @derived_object
-    class TrinityDouble(PyScheduleRule):
-        def _initialize_with_tune_context(self, context: "TuneContext") -> None:
-            pass
-
-        def apply(self, sch: Schedule, block: BlockRV) -> List[Schedule]:
-            if _is_root(sch, block):
-                return [sch]
-            new_sch = sch.copy()
-            i, j = new_sch.get_loops(block=block)
-            i_0, i_1 = new_sch.split(loop=i, factors=[16, 64])
-            j_0, j_1 = new_sch.split(loop=j, factors=[64, 16])
-            new_sch.reorder(i_0, j_0, i_1, j_1)
-            result = [new_sch]
-            new_sch = sch.copy()
-            i, j = new_sch.get_loops(block=block)
-            i_0, i_1 = new_sch.split(loop=i, factors=[2, 512])
-            j_0, j_1 = new_sch.split(loop=j, factors=[2, 512])
-            new_sch.reorder(i_0, j_0, i_1, j_1)
-            result.append(new_sch)
-            return result
-
     @derived_object
     class RemoveBlock(PyScheduleRule):
         def _initialize_with_tune_context(self, context: "TuneContext") -> None:
@@ -321,18 +334,22 @@ def test_meta_schedule_post_order_apply_remove_block():
     def correct_trace(a, b, c, d):
         return "\n".join(
             [
-                'b0 = sch.get_block(name="A", func_name="main")',
-                'b1 = sch.get_block(name="B", func_name="main")',
-                'b2 = sch.get_block(name="C", func_name="main")',
-                "sch.compute_inline(block=b1)",
-                "l3, l4 = sch.get_loops(block=b2)",
-                "l5, l6 = sch.split(loop=l3, factors=" + str(a) + ", preserve_unit_iters=True)",
-                "l7, l8 = sch.split(loop=l4, factors=" + str(b) + ", preserve_unit_iters=True)",
-                "sch.reorder(l5, l7, l6, l8)",
-                "l9, l10 = sch.get_loops(block=b0)",
-                "l11, l12 = sch.split(loop=l9, factors=" + str(c) + ", preserve_unit_iters=True)",
-                "l13, l14 = sch.split(loop=l10, factors=" + str(d) + ", preserve_unit_iters=True)",
-                "sch.reorder(l11, l13, l12, l14)",
+                "# from tvm import tir",
+                "def apply_trace(sch: tir.Schedule) -> None:",
+                '  b0 = sch.get_block(name="A", func_name="main")',
+                '  b1 = sch.get_block(name="B", func_name="main")',
+                '  b2 = sch.get_block(name="C", func_name="main")',
+                "  sch.compute_inline(block=b1)",
+                "  l3, l4 = sch.get_loops(block=b2)",
+                "  l5, l6 = sch.split(loop=l3, factors=" + str(a) + ", preserve_unit_iters=True)",
+                "  l7, l8 = sch.split(loop=l4, factors=" + str(b) + ", preserve_unit_iters=True)",
+                "  sch.reorder(l5, l7, l6, l8)",
+                "  l9, l10 = sch.get_loops(block=b0)",
+                "  l11, l12 = sch.split(loop=l9, factors=" + str(c) + ", preserve_unit_iters=True)",
+                "  l13, l14 = sch.split(loop=l10, factors="
+                + str(d)
+                + ", preserve_unit_iters=True)",
+                "  sch.reorder(l11, l13, l12, l14)",
             ]
         )
 
@@ -341,8 +358,11 @@ def test_meta_schedule_post_order_apply_remove_block():
         mod=mod,
         target=Target("llvm"),
         task_name="Remove Block Task",
-        space_generator=PostOrderApply(),
-        sch_rules=[RemoveBlock(), TrinityDouble()],
+        space_generator=PostOrderApply(
+            sch_rules=[RemoveBlock(), TrinityDoubleRule()],
+            postprocs=[],
+            mutator_probs={},
+        ),
     )
     post_order_apply = context.space_generator
     schs = post_order_apply.generate_design_space(mod)
@@ -368,8 +388,11 @@ def test_meta_schedule_custom_search_space():
         mod=mod,
         target=Target("llvm"),
         task_name="Custom Search Space Task",
-        space_generator=PostOrderApply(),
-        sch_rules=[],
+        space_generator=PostOrderApply(
+            sch_rules=[],
+            postprocs=[],
+            mutator_probs={},
+        ),
     )
     post_order_apply = context.space_generator
     post_order_apply.generate_design_space(mod)
@@ -383,6 +406,45 @@ def test_meta_schedule_custom_search_space():
     register_func("tvm.meta_schedule.test.custom_search_space", custom_search_space_func)
     post_order_apply.generate_design_space(mod)
     assert called
+
+
+def test_target_blocks_search_space():
+    # Test that specific blocks of trinity matmul can be targeted.
+    def filter_fn(block, target_names) -> bool:
+        return block.name_hint in target_names
+
+    def _get_sch(filter_fn):
+        mod = TrinityMatmul
+        context = TuneContext(
+            mod=mod,
+            target=Target("llvm"),
+            task_name="Custom Search Space Task",
+            space_generator=PostOrderApply(
+                f_block_filter=filter_fn,
+                sch_rules=[TrinityDoubleRule()],
+                postprocs=[],
+                mutator_probs={},
+            ),
+        )
+        post_order_apply = context.space_generator
+        schs = post_order_apply.generate_design_space(mod)
+        return schs
+
+    # Start by checking that by default each block has a space generated.
+    schs = _get_sch(None)
+    assert len(schs) == 8
+
+    # Next check that we can target a specific block and only get its' revelant schedules.
+    schs = _get_sch(lambda block: filter_fn(block, ["B"]))
+    assert len(schs) == 2
+
+    ## Check that extracting two blocks works.
+    schs = _get_sch(lambda block: filter_fn(block, ["A", "C"]))
+    assert len(schs) == 4
+
+    ## Finally check that all blocks can be extracted by name.
+    schs = _get_sch(lambda block: filter_fn(block, ["A", "B", "C"]))
+    assert len(schs) == 8
 
 
 if __name__ == "__main__":
