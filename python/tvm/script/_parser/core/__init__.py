@@ -14,26 +14,5 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-
-# Build environment that can be used to build tvm.
-name: tvm-build
-
-# The conda channels to lookup the dependencies
-channels:
-  - anaconda
-  - conda-forge
-
-# The packages to install to the environment
-dependencies:
-  - python=3.7 # or 3.8. See https://github.com/apache/tvm/issues/8577 for more details on >= 3.9
-  - conda-build
-  - git
-  - llvmdev >=11
-  - numpy
-  - pytest
-  - cython
-  - cmake
-  - bzip2
-  - make
-  - scipy
-  - pillow
+"""The core parser infra"""
+from . import diagnostics, doc, doc_core, utils
