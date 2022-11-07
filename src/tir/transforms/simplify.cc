@@ -38,11 +38,23 @@ using namespace tir;
 
 struct SimplifyConfigNode : public tvm::AttrsNode<SimplifyConfigNode> {
   bool transitively_prove_inequalities;
+  bool convert_boolean_to_and_of_ors;
+  bool apply_constraints_to_boolean_branches;
 
   TVM_DECLARE_ATTRS(SimplifyConfigNode, "tir.transform.SimplifyConfig") {
     TVM_ATTR_FIELD(transitively_prove_inequalities)
         .describe(
             "If true, simplify conditionals with transitive combinations of scoped constraints")
+        .set_default(false);
+
+    TVM_ATTR_FIELD(convert_boolean_to_and_of_ors)
+        .describe("If true, simplify conditionals into an AND of ORs")
+        .set_default(false);
+
+    TVM_ATTR_FIELD(apply_constraints_to_boolean_branches)
+        .describe(
+            "If true, simplify each branch of AND/OR "
+            "under a constraints provided by the other branch")
         .set_default(false);
   }
 
@@ -51,6 +63,13 @@ struct SimplifyConfigNode : public tvm::AttrsNode<SimplifyConfigNode> {
     if (transitively_prove_inequalities) {
       flags =
           RewriteSimplifier::Extension(flags | RewriteSimplifier::kTransitivelyProveInequalities);
+    }
+    if (convert_boolean_to_and_of_ors) {
+      flags = RewriteSimplifier::Extension(flags | RewriteSimplifier::kConvertBooleanToAndOfOrs);
+    }
+    if (apply_constraints_to_boolean_branches) {
+      flags = RewriteSimplifier::Extension(flags |
+                                           RewriteSimplifier::kApplyConstraintsToBooleanBranches);
     }
     return flags;
   }
@@ -120,8 +139,8 @@ class StmtSimplifier : public IRMutatorWithAnalyzer {
     if (const int64_t* as_int = as_const_int(cond)) {
       if (*as_int) {
         return this->VisitStmt(op->then_case);
-      } else if (op->else_case.defined()) {
-        return this->VisitStmt(op->else_case);
+      } else if (op->else_case) {
+        return this->VisitStmt(op->else_case.value());
       } else {
         return Evaluate(0);
       }
@@ -202,6 +221,5 @@ Pass Simplify() {
 TVM_REGISTER_GLOBAL("tir.transform.Simplify").set_body_typed(Simplify);
 
 }  // namespace transform
-
 }  // namespace tir
 }  // namespace tvm

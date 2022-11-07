@@ -30,6 +30,7 @@ from . import (
     search_strategy,
     space_generator,
     tir_integration,
+    trace_apply,
 )
 from .builder import Builder
 from .cost_model import CostModel
@@ -48,6 +49,7 @@ from .runner import Runner
 from .schedule_rule import ScheduleRule
 from .search_strategy import MeasureCandidate, SearchStrategy
 from .space_generator import SpaceGenerator
+from .task_scheduler import TaskScheduler
 from .tir_integration import tune_tir
 from .tune import tune_tasks
 from .tune_context import TuneContext

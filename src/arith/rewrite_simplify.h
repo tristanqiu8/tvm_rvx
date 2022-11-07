@@ -98,6 +98,10 @@ class RewriteSimplifier::Impl : public IRMutatorWithAnalyzer {
   // Optionally enabled extensions
   Extension enabled_extensions_{kNone};
 
+  /*! Whether the simplifier is current
+   */
+  bool recursively_visiting_boolean_{false};
+
   // maximum number of recursion allowed during a single pass.
   static const constexpr int kMaxRecurDepth = 5;
 
@@ -132,6 +136,27 @@ class RewriteSimplifier::Impl : public IRMutatorWithAnalyzer {
    * with.  Otherwise, return false.
    */
   Optional<PrimExpr> TryMatchLiteralConstraint(const PrimExpr& expr) const;
+
+  /*! \brief Rewrite rules for Less Than comparisons
+   *
+   * These are separate from the VisitExpr_(const LTNode*) method, as
+   * they may required from rewrites of LT or LE.
+   */
+  PrimExpr ApplyRewriteRules(LT node);
+
+  /*! \brief Rewrite rules for Equal comparisons
+   *
+   * These are separate from the VisitExpr_(const EQNode*) method, as
+   * they may required from rewrites of LE or NE.
+   */
+  PrimExpr ApplyRewriteRules(EQ node);
+
+  /*! \brief Rewrite rules for Equal comparisons
+   *
+   * These are separate from the VisitExpr_(const EQNode*) method, as
+   * they may required from rewrites of LT, LE, or NE.
+   */
+  PrimExpr ApplyRewriteRules(Not node);
 
  private:
   CompareResult TryCompareUsingKnownInequalities(const PrimExpr& x, const PrimExpr& y);
