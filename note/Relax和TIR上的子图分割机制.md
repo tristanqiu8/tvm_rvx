@@ -95,7 +95,7 @@ def _check_matmul(context: PatternCheckContext) -> bool:
 
 ​	  \- var_usages: 变量定义到使用点的映射
 
-  	\- value_to_bound_var: 值到绑定变量的映射
+​          - value_to_bound_var: 值到绑定变量的映射
 
 ```c++
 class PatternCheckContextNode : public Object {
@@ -196,7 +196,35 @@ TVM_REGISTER_NODE_TYPE(PatternCheckContextNode);
 
 ### 分割过程实现
 
-子图分割通过`partition_for_cublas`等函数实现，该函数使用`FuseOpsByPattern`变换，传入注册的模式并设置相应的标注参数。 [3](#0-2) 
+子图分割通过`partition_for_cublas`等函数实现，该函数使用`FuseOpsByPattern`变换，传入注册的模式并设置相应的标注参数。 cublas.py:222-244
+
+
+
+```python
+def partition_for_cublas(mod, bind_constants=False):
+    """
+    Partition the input module into cuBLAS-supported subgraphs.
+
+    Parameters
+    ----------
+    mod: tvm.IRModule
+        The IRModule to be partitioned.
+
+    bind_constants : bool
+        Whether or not to keep bound constants in the grouped function.
+
+    Returns
+    -------
+    mod: tvm.IRModule
+        The resulting IRModule, containing partitioned subgraphs to be
+        offloaded to the cuBLAS backend.
+    """
+
+    patterns = get_patterns_with_prefix("cublas")
+    return transform.FuseOpsByPattern(
+        patterns, bind_constants=bind_constants, annotate_codegen=True
+    )(mod)
+```
 
 ### 复合函数的合并
 
@@ -266,6 +294,26 @@ class Conv2dReLUx2_merged:
         gv3: R.Tensor((1, 64, 54, 54), dtype="float32") = lv11(lv2, weight21)
         return gv3
 ```
+
+FuseOpsByPattern 是 TVM Relax 中的一个编译器  Pass，它不是一个数据结构，而是一个函数/变换。相关的核心数据结构是 FusionPattern：
+
+  FusionPattern 数据结构包含以下字段：
+
+  1. name (String) - 模式名称，匹配成功后会作为融合函数的 kComposite 属性值
+  2. pattern (DFPattern) - 数据流模式，用于在 DataflowBlock 中匹配表达式。被模式覆盖的所有 call
+    节点会被提取到融合函数中
+  3. annotation_patterns (Map<String, DFPattern>) -
+    用于从模式匹配结果中提取重要表达式的映射。这个映射中的所有 DFPattern 都必须是 pattern 的一部分
+  4. check (Optionalffi::Function) - 可选的检查函数，用于决定是否接受匹配结果。签名为 bool(const         
+    PatternCheckContext& context)
+  5. attrs_getter (Optionalffi::Function) - 可选的函数，用于获取融合函数的属性。签名为 Map<String,       
+    Any>(const Map<String, Expr>& context)
+
+  FuseOpsByPattern 的作用：
+  - 对模块中的每个函数应用模式匹配
+  - 将匹配到的表达式分组到新函数中
+  - 结果类似于 FuseOps，但融合完全由提供的模式驱动
+  - 只在数据流块内操作
 
 ### MergeCompositeFunctions
 
@@ -429,7 +477,7 @@ class CompositeGroupsBuilder : public MemoizedExprTranslator<Group*> {
     - 每个 Group 代表一组可以合并的算子或函数
     - 包含属性：父节点、节点数量、codegen 名称等
   2. MergeGroup 函数的实现 (src/relax/transform/merge_composite_functions.cc:199-221)：
-    
+        
       ```c++
         void MergeGroup(Group* from, Group* to) {
         // 1. 确保两个组的 codegen 目标相同
@@ -446,11 +494,57 @@ class CompositeGroupsBuilder : public MemoizedExprTranslator<Group*> {
             // 4. 更新依赖关系
         group_deps_[to_root].merge(group_deps_[from_root]);
         // 维护所有组都是根组的不变量
+
     }
   ```
   
   
   
+
+  ```
+
+ 主要方法
+
+1. Run 方法 (src/relax/transform/merge_composite_functions.cc:310-316):
+
+```c++
+  Function Run(Function func) {
+      inlined_functions_ = Map<Function, Function>();
+      auto new_body = VisitExpr(ToNonDataflow(func->body));
+      auto new_func = Function(func->params, new_body, func->ret_struct_info,
+                             func->is_pure, func->attrs, func->span);
+      return new_func;
+  }
+```
+
+  - 初始化内联函数缓存
+  - 将函数体转换为非数据流形式后进行访问
+  - 创建新函数并返回
+
+2. VisitExpr_ 方法 (src/relax/transform/merge_composite_functions.cc:318-333):
+
+```C++
+  Expr VisitExpr_(const CallNode* call) {
+      if (call->op->IsInstance<GlobalVarNode>()) {
+          auto gvar = Downcast<GlobalVar>(call->op);
+          auto func = Downcast<Function>(mod_->Lookup(gvar));
+
+          // 检查是否是复合函数
+          if (func->GetAttr<String>(attr::kComposite)) {
+              // 如果还未内联过，创建新的函数副本
+              if (!inlined_functions_.count(func)) {
+                  auto new_func = CopyWithNewVars(func);
+                  // 移除 kPrimitive 属性
+                  new_func = WithoutAttr(new_func, tvm::relax::attr::kPrimitive);
+                  inlined_functions_.Set(func, new_func);
+              }
+              // 返回对内联函数的调用
+              return Call(inlined_functions_[func], call->args);
+          }
+      }
+      return ExprMutator::VisitExpr_(call);
+  }
+```
 
   合并条件
 
@@ -513,49 +607,6 @@ class CompositeInliner : public ExprMutator {
     IRModule mod_;
     Map<Function, Function> inlined_functions_;  // 缓存已内联的函数
   };
-```
-
- 主要方法
-
-1. Run 方法 (src/relax/transform/merge_composite_functions.cc:310-316):
-
-```c++
-  Function Run(Function func) {
-      inlined_functions_ = Map<Function, Function>();
-      auto new_body = VisitExpr(ToNonDataflow(func->body));
-      auto new_func = Function(func->params, new_body, func->ret_struct_info,
-                             func->is_pure, func->attrs, func->span);
-      return new_func;
-  }
-```
-
-  - 初始化内联函数缓存
-  - 将函数体转换为非数据流形式后进行访问
-  - 创建新函数并返回
-
-2. VisitExpr_ 方法 (src/relax/transform/merge_composite_functions.cc:318-333):
-
-```C++
-  Expr VisitExpr_(const CallNode* call) {
-      if (call->op->IsInstance<GlobalVarNode>()) {
-          auto gvar = Downcast<GlobalVar>(call->op);
-          auto func = Downcast<Function>(mod_->Lookup(gvar));
-
-          // 检查是否是复合函数
-          if (func->GetAttr<String>(attr::kComposite)) {
-              // 如果还未内联过，创建新的函数副本
-              if (!inlined_functions_.count(func)) {
-                  auto new_func = CopyWithNewVars(func);
-                  // 移除 kPrimitive 属性
-                  new_func = WithoutAttr(new_func, tvm::relax::attr::kPrimitive);
-                  inlined_functions_.Set(func, new_func);
-              }
-              // 返回对内联函数的调用
-              return Call(inlined_functions_[func], call->args);
-          }
-      }
-      return ExprMutator::VisitExpr_(call);
-  }
 ```
 
  工作流程
@@ -696,15 +747,14 @@ update 方法 (行353-358):
     - 每个 codegen 后端的函数都被独立处理
     - 保持原始调用接口不变（参数相同）
 
-  在整体流程中的作用
+ 在 MergeCompositeFunctions 的处理流程中：
 
-  在 MergeCompositeFunctions 的处理流程中：
-  1. CompositeGroupsBuilder 分析并构建组
-  2. MakeGroupedFunctions 根据分组创建函数
-  3. CompositeFunctionAnnotator 为这些函数添加必要的属性和重命名
-  4. 最终生成适合外部后端编译的独立函数
+    1. CompositeGroupsBuilder 分析并构建组
+    2. MakeGroupedFunctions 根据分组创建函数
+    3. CompositeFunctionAnnotator 为这些函数添加必要的属性和重命名
+    4. 最终生成适合外部后端编译的独立函数
 
-  这个类是实现 TVM与外部编译器集成的关键组件，确保生成的函数符合外部编译器的要求，并且可以独立编译和执行。
+ 这个类是实现 TVM与外部编译器集成的关键组件，确保生成的函数符合外部编译器的要求，并且可以独立编译和执行。
 
 ##### 小结
 
@@ -905,3 +955,76 @@ GraphPartitioner 是 TVM Relax 中用于算子融合（operator fusion）的核�
     - detect_recursion处理递归函数的特殊情况
 
   这些分析工具共同构成了Relax编译器的分析基础设施，为后续的优化Pass和代码生成提供必要的信息支持。
+
+# 支配树
+
+支配树（Dominator Tree）是编译器优化中的一个重要数据结构，主要用于控制流分析。让我详细解释一下这个概念：
+
+## 支配关系（Dominance）
+
+在控制流图（CFG）中，如果从程序入口到节点 B 的**所有路径**都必须经过节点 A，那么我们说节点 A **支配**（dominates）节点 B，记作 A dom B。
+
+几个关键点：
+
+- 每个节点都支配自己
+- 入口节点支配所有节点
+- 如果 A 支配 B，且 B 支配 C，则 A 支配 C（传递性）
+
+## 直接支配者（Immediate Dominator）
+
+节点 B 的直接支配者（idom）是指：在所有支配 B 的节点中，离 B 最近的那个节点（除了 B 自己）。每个节点（除了入口节点）都有唯一的直接支配者。
+
+## 支配树的构建
+
+支配树是这样构建的：
+
+- 树的根是 CFG 的入口节点
+- 如果节点 A 是节点 B 的直接支配者，那么在支配树中 A 是 B 的父节点
+
+举个例子：
+
+```
+CFG:
+    1
+   / \
+  2   3
+   \ /
+    4
+    |
+    5
+```
+
+在这个 CFG 中：
+
+- 节点 1 支配所有节点
+- 节点 4 被 1 支配（所有到 4 的路径都经过 1）
+- 节点 5 被 1 和 4 支配
+
+对应的支配树：
+
+```
+    1
+   /|\
+  2 3 4
+      |
+      5
+```
+
+## 支配树的应用
+
+支配树在编译器优化中有多种用途：
+
+1. **SSA 构造**：在构建静态单赋值形式时，需要计算支配边界来确定 φ 函数的插入位置
+2. **循环识别**：通过支配关系可以识别自然循环
+3. **代码移动**：确定代码可以安全移动的位置
+4. **死代码消除**：如果一个定义点支配所有使用点，可以进行某些优化
+5. **公共子表达式消除**：在支配关系下可以安全地重用计算结果
+
+## 计算算法
+
+常用的支配树计算算法包括：
+
+- Lengauer-Tarjan 算法：O(n·α(n)) 时间复杂度
+- Cooper-Harvey-Kennedy 算法：实践中表现良好的简单算法
+
+支配树是理解和实现许多编译器优化的基础，它提供了程序控制流的层次结构视图，使得许多复杂的优化变得可行。
