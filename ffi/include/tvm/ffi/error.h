@@ -64,7 +64,7 @@ namespace ffi {
  *  This error can be thrown by EnvCheckSignals to indicate
  *  that there is an error set in the frontend environment(e.g.
  *  python interpreter). The TVM FFI should catch this error
- *  and return a proper code tell the frontend caller about
+ *  and return a proper code to tell the frontend caller about
  *  this fact.
  *
  * \code
@@ -85,10 +85,10 @@ struct EnvErrorAlreadySet : public std::exception {};
  */
 class ErrorObj : public Object, public TVMFFIErrorCell {
  public:
+  /// \cond Doxygen_Suppress
   static constexpr const int32_t _type_index = TypeIndex::kTVMFFIError;
-  static constexpr const char* _type_key = "ffi.Error";
-
-  TVM_FFI_DECLARE_STATIC_OBJECT_INFO(ErrorObj, Object);
+  TVM_FFI_DECLARE_OBJECT_INFO_STATIC("ffi.Error", ErrorObj, Object);
+  /// \endcond
 };
 
 namespace details {
@@ -125,33 +125,65 @@ class ErrorObjFromStd : public ErrorObj {
  */
 class Error : public ObjectRef, public std::exception {
  public:
+  /*!
+   * \brief Constructor
+   * \param kind The kind of the error.
+   * \param message The message of the error.
+   * \param traceback The traceback of the error.
+   */
   Error(std::string kind, std::string message, std::string traceback) {
     data_ = make_object<details::ErrorObjFromStd>(kind, message, traceback);
   }
 
+  /*!
+   * \brief Constructor
+   * \param kind The kind of the error.
+   * \param message The message of the error.
+   * \param traceback The traceback of the error.
+   */
   Error(std::string kind, std::string message, const TVMFFIByteArray* traceback)
       : Error(kind, message, std::string(traceback->data, traceback->size)) {}
 
+  /*!
+   * \brief Get the kind of the error object.
+   * \return The kind of the error object.
+   */
   std::string kind() const {
     ErrorObj* obj = static_cast<ErrorObj*>(data_.get());
     return std::string(obj->kind.data, obj->kind.size);
   }
 
+  /*!
+   * \brief Get the message of the error object.
+   * \return The message of the error object.
+   */
   std::string message() const {
     ErrorObj* obj = static_cast<ErrorObj*>(data_.get());
     return std::string(obj->message.data, obj->message.size);
   }
 
+  /*!
+   * \brief Get the traceback of the error object.
+   * \return The traceback of the error object.
+   */
   std::string traceback() const {
     ErrorObj* obj = static_cast<ErrorObj*>(data_.get());
     return std::string(obj->traceback.data, obj->traceback.size);
   }
 
+  /*!
+   * \brief Update the traceback of the error object.
+   * \param traceback_str The traceback to update.
+   */
   void UpdateTraceback(const TVMFFIByteArray* traceback_str) {
     ErrorObj* obj = static_cast<ErrorObj*>(data_.get());
     obj->update_traceback(obj, traceback_str);
   }
 
+  /*!
+   * \brief Get the error message
+   * \return The error message
+   */
   const char* what() const noexcept(true) override {
     thread_local std::string what_data;
     ErrorObj* obj = static_cast<ErrorObj*>(data_.get());
@@ -162,7 +194,9 @@ class Error : public ObjectRef, public std::exception {
     return what_data.c_str();
   }
 
-  TVM_FFI_DEFINE_NOTNULLABLE_OBJECT_REF_METHODS(Error, ObjectRef, ErrorObj);
+  /// \cond Doxygen_Suppress
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(Error, ObjectRef, ErrorObj);
+  /// \endcond
 };
 
 namespace details {
@@ -177,7 +211,7 @@ class ErrorBuilder {
 
 // MSVC disable warning in error builder as it is exepected
 #ifdef _MSC_VER
-#pragma disagnostic push
+#pragma warning(push)
 #pragma warning(disable : 4722)
 #endif
   // avoid inline to reduce binary size, error throw path do not need to be fast
@@ -189,7 +223,7 @@ class ErrorBuilder {
     throw error;
   }
 #ifdef _MSC_VER
-#pragma disagnostic pop
+#pragma warning(pop)
 #endif
 
   std::ostringstream& stream() { return stream_; }
@@ -201,8 +235,6 @@ class ErrorBuilder {
   bool log_before_throw_;
 };
 
-// define traceback here as call into traceback function
-#define TVM_FFI_TRACEBACK_HERE TVMFFITraceback(__FILE__, __LINE__, TVM_FFI_FUNC_SIG)
 }  // namespace details
 
 /*!
@@ -216,9 +248,10 @@ class ErrorBuilder {
  *
  * \endcode
  */
-#define TVM_FFI_THROW(ErrorKind)                                        \
-  ::tvm::ffi::details::ErrorBuilder(#ErrorKind, TVM_FFI_TRACEBACK_HERE, \
-                                    TVM_FFI_ALWAYS_LOG_BEFORE_THROW)    \
+#define TVM_FFI_THROW(ErrorKind)                                                              \
+  ::tvm::ffi::details::ErrorBuilder(#ErrorKind,                                               \
+                                    TVMFFITraceback(__FILE__, __LINE__, TVM_FFI_FUNC_SIG, 0), \
+                                    TVM_FFI_ALWAYS_LOG_BEFORE_THROW)                          \
       .stream()
 
 /*!
@@ -228,8 +261,10 @@ class ErrorBuilder {
  *  cannot be caught, and it is better to have a clear log message.
  *  In most cases, we should use use TVM_FFI_THROW.
  */
-#define TVM_FFI_LOG_AND_THROW(ErrorKind) \
-  ::tvm::ffi::details::ErrorBuilder(#ErrorKind, TVM_FFI_TRACEBACK_HERE, true).stream()
+#define TVM_FFI_LOG_AND_THROW(ErrorKind)                                          \
+  ::tvm::ffi::details::ErrorBuilder(                                              \
+      #ErrorKind, TVMFFITraceback(__FILE__, __LINE__, TVM_FFI_FUNC_SIG, 0), true) \
+      .stream()
 
 // Glog style checks with TVM_FFI prefix
 // NOTE: we explicitly avoid glog style generic macros (LOG/CHECK) in tvm ffi

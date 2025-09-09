@@ -38,8 +38,6 @@ namespace ffi {
  * \brief Extension code beyond the DLDataType.
  *
  * This class is always consistent with the DLPack.
- *
- * TOTO(tvm-team): update to latest DLPack types.
  */
 enum DLExtDataTypeCode { kDLExtCustomBegin = 129 };
 
@@ -113,16 +111,27 @@ inline const char* DLDataTypeCodeAsCStr(DLDataTypeCode type_code) {  // NOLINT(*
 }
 }  // namespace details
 
+/*!
+ * \brief Convert a string to a DLDataType.
+ * \param str The string to convert.
+ * \return The DLDataType.
+ */
 inline DLDataType StringToDLDataType(const String& str) {
   DLDataType out;
-  TVM_FFI_CHECK_SAFE_CALL(TVMFFIDataTypeFromString(str.get(), &out));
+  TVMFFIByteArray data{str.data(), str.size()};
+  TVM_FFI_CHECK_SAFE_CALL(TVMFFIDataTypeFromString(&data, &out));
   return out;
 }
 
+/*!
+ * \brief Convert a DLDataType to a string.
+ * \param dtype The DLDataType to convert.
+ * \return The string.
+ */
 inline String DLDataTypeToString(DLDataType dtype) {
-  TVMFFIObjectHandle out;
+  TVMFFIAny out;
   TVM_FFI_CHECK_SAFE_CALL(TVMFFIDataTypeToString(&dtype, &out));
-  return String(details::ObjectUnsafe::ObjectPtrFromOwned<Object>(static_cast<TVMFFIObject*>(out)));
+  return TypeTraits<String>::MoveFromAnyAfterCheck(&out);
 }
 
 // DLDataType
@@ -134,6 +143,7 @@ struct TypeTraits<DLDataType> : public TypeTraitsBase {
     // clear padding part to ensure the equality check can always check the v_uint64 part
     result->v_uint64 = 0;
     result->type_index = TypeIndex::kTVMFFIDataType;
+    result->zero_padding = 0;
     result->v_dtype = src;
   }
 
@@ -141,6 +151,7 @@ struct TypeTraits<DLDataType> : public TypeTraitsBase {
     // clear padding part to ensure the equality check can always check the v_uint64 part
     result->v_uint64 = 0;
     result->type_index = TypeIndex::kTVMFFIDataType;
+    result->zero_padding = 0;
     result->v_dtype = src;
   }
 

@@ -26,10 +26,7 @@ FetchContent_Declare(
 )
 FetchContent_GetProperties(googletest)
 if (NOT googletest_POPULATED)
-  FetchContent_Populate(googletest)
-  message(STATUS "Found googletest_SOURCE_DIR - ${googletest_SOURCE_DIR}")
-  message(STATUS "Found googletest_BINARY_DIR - ${googletest_BINARY_DIR}")
-  add_subdirectory(${googletest_SOURCE_DIR} ${googletest_BINARY_DIR})
+  FetchContent_MakeAvailable(googletest)
   include(GoogleTest)
   set_target_properties(gtest      PROPERTIES EXPORT_COMPILE_COMMANDS OFF EXCLUDE_FROM_ALL ON FOLDER 3rdparty)
   set_target_properties(gtest_main PROPERTIES EXPORT_COMPILE_COMMANDS OFF EXCLUDE_FROM_ALL ON FOLDER 3rdparty)
@@ -42,7 +39,7 @@ if (NOT googletest_POPULATED)
   )
 endif()
 
-macro(add_googletest target_name)
+macro(tvm_ffi_add_googletest target_name)
   add_test(
     NAME ${target_name}
     COMMAND ${target_name}

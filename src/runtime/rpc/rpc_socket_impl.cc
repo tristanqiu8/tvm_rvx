@@ -105,8 +105,8 @@ std::shared_ptr<RPCEndpoint> RPCConnect(std::string url, int port, std::string k
   return endpt;
 }
 
-Module RPCClientConnect(std::string url, int port, std::string key, bool enable_logging,
-                        ffi::PackedArgs init_seq) {
+ffi::Module RPCClientConnect(std::string url, int port, std::string key, bool enable_logging,
+                             ffi::PackedArgs init_seq) {
   auto endpt = RPCConnect(url, port, "client:" + key, enable_logging, init_seq);
   return CreateRPCSessionModule(CreateClientSession(endpt));
 }
@@ -169,7 +169,7 @@ class SimpleSockHandler : public dmlc::Stream {
 
 TVM_FFI_STATIC_INIT_BLOCK({
   namespace refl = tvm::ffi::reflection;
-  refl::GlobalDef().def("rpc.ReturnException", [](int sockfd, String msg) {
+  refl::GlobalDef().def("rpc.ReturnException", [](int sockfd, ffi::String msg) {
     auto handler = SimpleSockHandler(sockfd);
     RPCReference::ReturnException(msg.c_str(), &handler);
     return;

@@ -34,32 +34,82 @@
 namespace tvm {
 namespace ffi {
 
+/*!
+ * \brief TypeIndex enum, alias of TVMFFITypeIndex.
+ */
 using TypeIndex = TVMFFITypeIndex;
+
+/*!
+ * \brief TypeInfo, alias of TVMFFITypeInfo.
+ */
 using TypeInfo = TVMFFITypeInfo;
+
+/*!
+ * \brief Helper tag to explicitly request unsafe initialization.
+ *
+ * Constructing an ObjectRefType with UnsafeInit{} will set the data_ member to nullptr.
+ *
+ * When initializing Object fields, ObjectRef fields can be set to UnsafeInit.
+ * This enables the "construct with UnsafeInit then set all fields" pattern
+ * when the object does not have a default constructor.
+ *
+ * Used for initialization in controlled scenarios where such unsafe
+ * initialization is known to be safe.
+ *
+ * Each ObjectRefType should have a constructor that takes an UnsafeInit tag.
+ *
+ * \note As the name suggests, do not use it in normal code paths.
+ */
+struct UnsafeInit {};
 
 /*!
  * \brief Known type keys for pre-defined types.
  */
 struct StaticTypeKey {
+  /*! \brief The type key for Any */
   static constexpr const char* kTVMFFIAny = "Any";
+  /*! \brief The type key for None */
   static constexpr const char* kTVMFFINone = "None";
+  /*! \brief The type key for bool */
   static constexpr const char* kTVMFFIBool = "bool";
+  /*! \brief The type key for int */
   static constexpr const char* kTVMFFIInt = "int";
+  /*! \brief The type key for float */
   static constexpr const char* kTVMFFIFloat = "float";
+  /*! \brief The type key for void* */
   static constexpr const char* kTVMFFIOpaquePtr = "void*";
+  /*! \brief The type key for DataType */
   static constexpr const char* kTVMFFIDataType = "DataType";
+  /*! \brief The type key for Device */
   static constexpr const char* kTVMFFIDevice = "Device";
+  /*! \brief The type key for const char* */
   static constexpr const char* kTVMFFIRawStr = "const char*";
+  /*! \brief The type key for TVMFFIByteArray* */
   static constexpr const char* kTVMFFIByteArrayPtr = "TVMFFIByteArray*";
+  /*! \brief The type key for ObjectRValueRef */
   static constexpr const char* kTVMFFIObjectRValueRef = "ObjectRValueRef";
+  /*! \brief The type key for SmallStr */
+  static constexpr const char* kTVMFFISmallStr = "ffi.SmallStr";
+  /*! \brief The type key for SmallBytes */
+  static constexpr const char* kTVMFFISmallBytes = "ffi.SmallBytes";
+  /*! \brief The type key for Bytes */
   static constexpr const char* kTVMFFIBytes = "ffi.Bytes";
+  /*! \brief The type key for String */
   static constexpr const char* kTVMFFIStr = "ffi.String";
+  /*! \brief The type key for Shape */
   static constexpr const char* kTVMFFIShape = "ffi.Shape";
-  static constexpr const char* kTVMFFINDArray = "ffi.NDArray";
+  /*! \brief The type key for Tensor */
+  static constexpr const char* kTVMFFITensor = "ffi.Tensor";
+  /*! \brief The type key for Object */
   static constexpr const char* kTVMFFIObject = "ffi.Object";
+  /*! \brief The type key for Function */
   static constexpr const char* kTVMFFIFunction = "ffi.Function";
+  /*! \brief The type key for Array */
   static constexpr const char* kTVMFFIArray = "ffi.Array";
+  /*! \brief The type key for Map */
   static constexpr const char* kTVMFFIMap = "ffi.Map";
+  /*! \brief The type key for Module */
+  static constexpr const char* kTVMFFIModule = "ffi.Module";
 };
 
 /*!
@@ -92,7 +142,7 @@ TVM_FFI_INLINE bool IsObjectInstance(int32_t object_type_index);
 }  // namespace details
 
 /*!
- * \brief base class of all object containers.
+ * \brief Base class of all object containers.
  *
  * Sub-class of objects should declare the following static constexpr fields:
  *
@@ -104,7 +154,7 @@ TVM_FFI_INLINE bool IsObjectInstance(int32_t object_type_index);
  *       The unique string identifier of the type.
  * - _type_final:
  *       Whether the type is terminal type(there is no subclass of the type in the object system).
- *       This field is automatically set by macro TVM_DECLARE_FINAL_OBJECT_INFO
+ *       This field is automatically set by macro TVM_FFI_DECLARE_OBJECT_INFO_FINAL
  *       It is still OK to sub-class a terminal object type T and construct it using make_object.
  *       But IsInstance check will only show that the object type is T(instead of the sub-class).
  * - _type_mutable:
@@ -127,8 +177,8 @@ TVM_FFI_INLINE bool IsObjectInstance(int32_t object_type_index);
  *       Recommendation: set to false for optimal runtime speed if we know exact number of children.
  *
  * Two macros are used to declare helper functions in the object:
- * - Use TVM_FFI_DECLARE_BASE_OBJECT_INFO for object classes that can be sub-classed.
- * - Use TVM_FFI_DECLARE_FINAL_OBJECT_INFO for object classes that cannot be sub-classed.
+ * - Use TVM_FFI_DECLARE_OBJECT_INFO for object classes that can be sub-classed.
+ * - Use TVM_FFI_DECLARE_OBJECT_INFO_FINAL for object classes that cannot be sub-classed.
  *
  * New objects can be created using make_object function.
  * Which will automatically populate the type_index and deleter of the object.
@@ -140,7 +190,8 @@ class Object {
 
  public:
   Object() {
-    header_.ref_counter = 0;
+    header_.strong_ref_count = 0;
+    header_.weak_ref_count = 0;
     header_.deleter = nullptr;
   }
   /*!
@@ -185,41 +236,47 @@ class Object {
     return std::string(type_info->type_key.data, type_info->type_key.size);
   }
 
+  /*!
+   * \return Whether the object.use_count() == 1.
+   */
   bool unique() const { return use_count() == 1; }
 
   /*!
    * \return The usage count of the cell.
-   * \note We use stl style naming to be consistent with known API in shared_ptr.
+   * \note We use STL style naming to be consistent with known API in shared_ptr.
    */
   int32_t use_count() const {
     // only need relaxed load of counters
 #ifdef _MSC_VER
-    return (reinterpret_cast<const volatile long*>(&header_.ref_counter))[0];  // NOLINT(*)
+    return (reinterpret_cast<const volatile __int64*>(&header_.strong_ref_count))[0];  // NOLINT(*)
 #else
-    return __atomic_load_n(&(header_.ref_counter), __ATOMIC_RELAXED);
+    return __atomic_load_n(&(header_.strong_ref_count), __ATOMIC_RELAXED);
 #endif
   }
 
-  // Information about the object
+  //----------------------------------------------------------------------------
+  //  The following fields are configuration flags for subclasses of object
+  //----------------------------------------------------------------------------
+  /*! \brief The type key of the class */
   static constexpr const char* _type_key = StaticTypeKey::kTVMFFIObject;
-
-  // Default object type properties for sub-classes
+  /*! \brief Whether the class is final */
   static constexpr bool _type_final = false;
+  /*! \brief Whether allow mutable access to fields */
   static constexpr bool _type_mutable = false;
+  /*! \brief The number of child slots of the class to pre-allocate to this type */
   static constexpr uint32_t _type_child_slots = 0;
+  /*!
+   * \brief Whether allow additional children beyond pre-specified by _type_child_slots
+   */
   static constexpr bool _type_child_slots_can_overflow = true;
-  // NOTE: static type index field of the class
+  /*! \brief The static type index of the class */
   static constexpr int32_t _type_index = TypeIndex::kTVMFFIObject;
-  // the static type depth of the class
+  /*! \brief The static depth of the class in the object hierarchy */
   static constexpr int32_t _type_depth = 0;
-  // the structural equality and hash kind of the type
+  /*! \brief The structural equality and hash kind of the type */
   static constexpr TVMFFISEqHashKind _type_s_eq_hash_kind = kTVMFFISEqHashKindUnsupported;
-  // extra fields used by plug-ins for attribute visiting
-  // and structural information
-  static constexpr const bool _type_has_method_sequal_reduce = false;
-  static constexpr const bool _type_has_method_shash_reduce = false;
   // The following functions are provided by macro
-  // TVM_FFI_DECLARE_BASE_OBJECT_INFO and TVM_DECLARE_FINAL_OBJECT_INFO
+  // TVM_FFI_DECLARE_OBJECT_INFO and TVM_FFI_DECLARE_OBJECT_INFO_FINAL
   /*!
    * \brief Get the runtime allocated type index of the type
    * \note Getting this information may need dynamic calls into a global table.
@@ -231,33 +288,121 @@ class Object {
   static int32_t _GetOrAllocRuntimeTypeIndex() { return TypeIndex::kTVMFFIObject; }
 
  private:
-  /*! \brief increase reference count */
+  /*! \brief increase strong reference count, the caller must already hold a strong reference */
   void IncRef() {
 #ifdef _MSC_VER
-    _InterlockedIncrement(reinterpret_cast<volatile long*>(&header_.ref_counter));  // NOLINT(*)
+    _InterlockedIncrement64(
+        reinterpret_cast<volatile __int64*>(&header_.strong_ref_count));  // NOLINT(*)
 #else
-    __atomic_fetch_add(&(header_.ref_counter), 1, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&(header_.strong_ref_count), 1, __ATOMIC_RELAXED);
+#endif
+  }
+  /*!
+   * \brief Try to lock the object to increase the strong reference count,
+   *        the caller must already hold a strong reference.
+   * \return whether the lock call is successful and object is still alive.
+   */
+  bool TryPromoteWeakPtr() {
+#ifdef _MSC_VER
+    uint64_t old_count =
+        (reinterpret_cast<const volatile __int64*>(&header_.strong_ref_count))[0];  // NOLINT(*)
+    while (old_count > 0) {
+      uint64_t new_count = old_count + 1;
+      uint64_t old_count_loaded = _InterlockedCompareExchange64(
+          reinterpret_cast<volatile __int64*>(&header_.strong_ref_count), new_count, old_count);
+      if (old_count == old_count_loaded) {
+        return true;
+      }
+      old_count = old_count_loaded;
+    }
+    return false;
+#else
+    uint64_t old_count = __atomic_load_n(&(header_.strong_ref_count), __ATOMIC_RELAXED);
+    while (old_count > 0) {
+      // must do CAS to ensure that we are the only one that increases the reference count
+      // avoid condition when two threads tries to promote weak to strong at same time
+      // or when strong deletion happens between the load and the CAS
+      uint64_t new_count = old_count + 1;
+      if (__atomic_compare_exchange_n(&(header_.strong_ref_count), &old_count, new_count, true,
+                                      __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+        return true;
+      }
+    }
+    return false;
 #endif
   }
 
-  /*! \brief decrease reference count and delete the object */
+  /*! \brief increase weak reference count */
+  void IncWeakRef() {
+#ifdef _MSC_VER
+    _InterlockedIncrement(reinterpret_cast<volatile long*>(&header_.weak_ref_count));  // NOLINT(*)
+#else
+    __atomic_fetch_add(&(header_.weak_ref_count), 1, __ATOMIC_RELAXED);
+#endif
+  }
+
+  /*! \brief decrease strong reference count and delete the object */
   void DecRef() {
 #ifdef _MSC_VER
-    if (_InterlockedDecrement(                                               //
-            reinterpret_cast<volatile long*>(&header_.ref_counter)) == 0) {  // NOLINT(*)
+    // use simpler impl in windows to ensure correctness
+    if (_InterlockedDecrement64(                                                     //
+            reinterpret_cast<volatile __int64*>(&header_.strong_ref_count)) == 0) {  // NOLINT(*)
       // full barrrier is implicit in InterlockedDecrement
       if (header_.deleter != nullptr) {
-        header_.deleter(&(this->header_));
+        header_.deleter(&(this->header_), kTVMFFIObjectDeleterFlagBitMaskStrong);
+      }
+      if (_InterlockedDecrement(                                                  //
+              reinterpret_cast<volatile long*>(&header_.weak_ref_count)) == 0) {  // NOLINT(*)
+        if (header_.deleter != nullptr) {
+          header_.deleter(&(this->header_), kTVMFFIObjectDeleterFlagBitMaskWeak);
+        }
       }
     }
 #else
     // first do a release, note we only need to acquire for deleter
-    if (__atomic_fetch_sub(&(header_.ref_counter), 1, __ATOMIC_RELEASE) == 1) {
-      // only acquire when we need to call deleter
-      // in this case we need to ensure all previous writes are visible
+    if (__atomic_fetch_sub(&(header_.strong_ref_count), 1, __ATOMIC_RELEASE) == 1) {
+      if (__atomic_load_n(&(header_.weak_ref_count), __ATOMIC_RELAXED) == 1) {
+        // common case, we need to delete both the object and the memory block
+        // only acquire when we need to call deleter
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        if (header_.deleter != nullptr) {
+          // call deleter once
+          header_.deleter(&(this->header_), kTVMFFIObjectDeleterFlagBitMaskBoth);
+        }
+      } else {
+        // Slower path: there is still a weak reference left
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        // call destructor first, then decrease weak reference count
+        if (header_.deleter != nullptr) {
+          header_.deleter(&(this->header_), kTVMFFIObjectDeleterFlagBitMaskStrong);
+        }
+        // now decrease weak reference count
+        if (__atomic_fetch_sub(&(header_.weak_ref_count), 1, __ATOMIC_RELEASE) == 1) {
+          __atomic_thread_fence(__ATOMIC_ACQUIRE);
+          if (header_.deleter != nullptr) {
+            header_.deleter(&(this->header_), kTVMFFIObjectDeleterFlagBitMaskWeak);
+          }
+        }
+      }
+    }
+#endif
+  }
+
+  /*! \brief decrease weak reference count */
+  void DecWeakRef() {
+#ifdef _MSC_VER
+    if (_InterlockedDecrement(                                                  //
+            reinterpret_cast<volatile long*>(&header_.weak_ref_count)) == 0) {  // NOLINT(*)
+      if (header_.deleter != nullptr) {
+        header_.deleter(&(this->header_), kTVMFFIObjectDeleterFlagBitMaskWeak);
+      }
+    }
+#else
+    // now decrease weak reference count
+    if (__atomic_fetch_sub(&(header_.weak_ref_count), 1, __ATOMIC_RELEASE) == 1) {
       __atomic_thread_fence(__ATOMIC_ACQUIRE);
       if (header_.deleter != nullptr) {
-        header_.deleter(&(this->header_));
+        header_.deleter(&(this->header_), kTVMFFIObjectDeleterFlagBitMaskWeak);
       }
     }
 #endif
@@ -266,6 +411,8 @@ class Object {
   // friend classes
   template <typename>
   friend class ObjectPtr;
+  template <typename>
+  friend class WeakObjectPtr;
   friend struct tvm::ffi::details::ObjectUnsafe;
 };
 
@@ -403,6 +550,148 @@ class ObjectPtr {
   friend struct ObjectPtrHash;
   template <typename>
   friend class ObjectPtr;
+  template <typename>
+  friend class WeakObjectPtr;
+  friend struct tvm::ffi::details::ObjectUnsafe;
+};
+
+/*!
+ * \brief A custom smart pointer for Object.
+ * \tparam T the content data type.
+ * \sa make_object
+ */
+template <typename T>
+class WeakObjectPtr {
+ public:
+  /*! \brief default constructor */
+  WeakObjectPtr() {}
+  /*! \brief default constructor */
+  WeakObjectPtr(std::nullptr_t) {}  // NOLINT(*)
+  /*!
+   * \brief copy constructor
+   * \param other The value to be moved
+   */
+  WeakObjectPtr(const WeakObjectPtr<T>& other)  // NOLINT(*)
+      : WeakObjectPtr(other.data_) {}
+
+  /*!
+   * \brief copy constructor
+   * \param other The value to be moved
+   */
+  WeakObjectPtr(const ObjectPtr<T>& other)  // NOLINT(*)
+      : WeakObjectPtr(other.get()) {}
+  /*!
+   * \brief copy constructor
+   * \param other The value to be moved
+   */
+  template <typename U>
+  WeakObjectPtr(const WeakObjectPtr<U>& other)  // NOLINT(*)
+      : WeakObjectPtr(other.data_) {
+    static_assert(std::is_base_of<T, U>::value,
+                  "can only assign of child class ObjectPtr to parent");
+  }
+  /*!
+   * \brief copy constructor
+   * \param other The value to be moved
+   */
+  template <typename U>
+  WeakObjectPtr(const ObjectPtr<U>& other)  // NOLINT(*)
+      : WeakObjectPtr(other.data_) {
+    static_assert(std::is_base_of<T, U>::value,
+                  "can only assign of child class ObjectPtr to parent");
+  }
+  /*!
+   * \brief move constructor
+   * \param other The value to be moved
+   */
+  WeakObjectPtr(WeakObjectPtr<T>&& other)  // NOLINT(*)
+      : data_(other.data_) {
+    other.data_ = nullptr;
+  }
+  /*!
+   * \brief move constructor
+   * \param other The value to be moved
+   */
+  template <typename Y>
+  WeakObjectPtr(WeakObjectPtr<Y>&& other)  // NOLINT(*)
+      : data_(other.data_) {
+    static_assert(std::is_base_of<T, Y>::value,
+                  "can only assign of child class ObjectPtr to parent");
+    other.data_ = nullptr;
+  }
+  /*! \brief destructor */
+  ~WeakObjectPtr() { this->reset(); }
+  /*!
+   * \brief Swap this array with another Object
+   * \param other The other Object
+   */
+  void swap(WeakObjectPtr<T>& other) {  // NOLINT(*)
+    std::swap(data_, other.data_);
+  }
+
+  /*!
+   * \brief copy assignment
+   * \param other The value to be assigned.
+   * \return reference to self.
+   */
+  WeakObjectPtr<T>& operator=(const WeakObjectPtr<T>& other) {  // NOLINT(*)
+    // takes in plane operator to enable copy elison.
+    // copy-and-swap idiom
+    WeakObjectPtr(other).swap(*this);  // NOLINT(*)
+    return *this;
+  }
+  /*!
+   * \brief move assignment
+   * \param other The value to be assigned.
+   * \return reference to self.
+   */
+  WeakObjectPtr<T>& operator=(WeakObjectPtr<T>&& other) {  // NOLINT(*)
+    // copy-and-swap idiom
+    WeakObjectPtr(std::move(other)).swap(*this);  // NOLINT(*)
+    return *this;
+  }
+
+  /*! \return The internal object pointer if the object is still alive, otherwise nullptr */
+  ObjectPtr<T> lock() const {
+    if (data_ != nullptr && data_->TryPromoteWeakPtr()) {
+      ObjectPtr<T> ret;
+      // we already increase the reference count, so we don't need to do it again
+      ret.data_ = data_;
+      return ret;
+    }
+    return nullptr;
+  }
+
+  /*! \brief reset the content of ptr to be nullptr */
+  void reset() {
+    if (data_ != nullptr) {
+      data_->DecWeakRef();
+      data_ = nullptr;
+    }
+  }
+
+  /*! \return The use count of the ptr, for debug purposes */
+  int use_count() const { return data_ != nullptr ? data_->use_count() : 0; }
+
+  /*! \return whether the pointer is nullptr */
+  bool expired() const { return data_ == nullptr || data_->use_count() == 0; }
+
+ private:
+  /*! \brief internal pointer field */
+  Object* data_{nullptr};
+
+  /*!
+   * \brief constructor from Object
+   * \param data The data pointer
+   */
+  explicit WeakObjectPtr(Object* data) : data_(data) {
+    if (data_ != nullptr) {
+      data_->IncWeakRef();
+    }
+  }
+
+  template <typename>
+  friend class WeakObjectPtr;
   friend struct tvm::ffi::details::ObjectUnsafe;
 };
 
@@ -431,6 +720,8 @@ class ObjectRef {
   ObjectRef& operator=(ObjectRef&& other) = default;
   /*! \brief Constructor from existing object ptr */
   explicit ObjectRef(ObjectPtr<Object> data) : data_(data) {}
+  /*! \brief Constructor from UnsafeInit */
+  explicit ObjectRef(UnsafeInit) : data_(nullptr) {}
   /*!
    * \brief Comparator
    * \param other Another object ref.
@@ -503,7 +794,9 @@ class ObjectRef {
   TVM_FFI_INLINE std::optional<ObjectRefType> as() const {
     if (data_ != nullptr) {
       if (data_->IsInstance<typename ObjectRefType::ContainerType>()) {
-        return ObjectRefType(data_);
+        ObjectRefType ref(UnsafeInit{});
+        ref.data_ = data_;
+        return ref;
       } else {
         return std::nullopt;
       }
@@ -511,6 +804,7 @@ class ObjectRef {
       return std::nullopt;
     }
   }
+
   /*!
    * \brief Get the type index of the ObjectRef
    * \return The type index of the ObjectRef
@@ -529,7 +823,7 @@ class ObjectRef {
 
   /*! \brief type indicate the container type. */
   using ContainerType = Object;
-  // Default type properties for the reference class.
+  /*! \brief Whether the reference can point to nullptr */
   static constexpr bool _type_is_nullable = true;
 
  protected:
@@ -572,7 +866,7 @@ struct ObjectPtrEqual {
   TVM_FFI_INLINE bool operator()(const Variant<V...>& a, const Variant<V...>& b) const;
 };
 
-// If dynamic type is enabled, we still need to register the runtime type of parent
+/// \cond Doxygen_Suppress
 #define TVM_FFI_REGISTER_STATIC_TYPE_INFO(TypeName, ParentType)                               \
   static constexpr int32_t _type_depth = ParentType::_type_depth + 1;                         \
   static int32_t _GetOrAllocRuntimeTypeIndex() {                                              \
@@ -588,22 +882,27 @@ struct ObjectPtrEqual {
     return tindex;                                                                            \
   }                                                                                           \
   static inline int32_t _register_type_index = _GetOrAllocRuntimeTypeIndex()
+/// \endcond
 
 /*!
- * \brief Helper macro to declare a object that comes with static type index.
+ * \brief Helper macro to declare object information with static type index.
+ *
+ * \param TypeKey The type key of the current type.
  * \param TypeName The name of the current type.
  * \param ParentType The name of the ParentType
  */
-#define TVM_FFI_DECLARE_STATIC_OBJECT_INFO(TypeName, ParentType)      \
-  static int32_t RuntimeTypeIndex() { return TypeName::_type_index; } \
+#define TVM_FFI_DECLARE_OBJECT_INFO_STATIC(TypeKey, TypeName, ParentType) \
+  static constexpr const char* _type_key = TypeKey;                       \
+  static int32_t RuntimeTypeIndex() { return TypeName::_type_index; }     \
   TVM_FFI_REGISTER_STATIC_TYPE_INFO(TypeName, ParentType)
 
 /*!
- * \brief helper macro to declare a base object type that can be inherited.
+ * \brief Helper macro to declare object information with type key already defined in class.
+ *
  * \param TypeName The name of the current type.
  * \param ParentType The name of the ParentType
  */
-#define TVM_FFI_DECLARE_BASE_OBJECT_INFO(TypeName, ParentType)                                \
+#define TVM_FFI_DECLARE_OBJECT_INFO_PREDEFINED_TYPE_KEY(TypeName, ParentType)                 \
   static constexpr int32_t _type_depth = ParentType::_type_depth + 1;                         \
   static int32_t _GetOrAllocRuntimeTypeIndex() {                                              \
     static_assert(!ParentType::_type_final, "ParentType marked as final");                    \
@@ -621,16 +920,29 @@ struct ObjectPtrEqual {
   static inline int32_t _type_index = _GetOrAllocRuntimeTypeIndex()
 
 /*!
- * \brief helper macro to declare type information in a final class.
+ * \brief Helper macro to declare object information with dynamic type index.
+ *
+ * \param TypeKey The type key of the current type.
  * \param TypeName The name of the current type.
  * \param ParentType The name of the ParentType
  */
-#define TVM_FFI_DECLARE_FINAL_OBJECT_INFO(TypeName, ParentType) \
-  static const constexpr int _type_child_slots = 0;             \
-  static const constexpr bool _type_final = true;               \
-  TVM_FFI_DECLARE_BASE_OBJECT_INFO(TypeName, ParentType)
+#define TVM_FFI_DECLARE_OBJECT_INFO(TypeKey, TypeName, ParentType) \
+  static constexpr const char* _type_key = TypeKey;                \
+  TVM_FFI_DECLARE_OBJECT_INFO_PREDEFINED_TYPE_KEY(TypeName, ParentType)
 
-/*
+/*!
+ * \brief Helper macro to declare object information with dynamic type index and is final.
+ *
+ * \param TypeKey The type key of the current type.
+ * \param TypeName The name of the current type.
+ * \param ParentType The name of the ParentType
+ */
+#define TVM_FFI_DECLARE_OBJECT_INFO_FINAL(TypeKey, TypeName, ParentType) \
+  static const constexpr int _type_child_slots [[maybe_unused]] = 0;     \
+  static const constexpr bool _type_final [[maybe_unused]] = true;       \
+  TVM_FFI_DECLARE_OBJECT_INFO(TypeKey, TypeName, ParentType)
+
+/*!
  * \brief Define object reference methods.
  *
  * \param TypeName The object type name
@@ -640,60 +952,35 @@ struct ObjectPtrEqual {
  * \note This macro also defines the default constructor that puts the ObjectRef
  *       in undefined state initially.
  */
-#define TVM_FFI_DEFINE_OBJECT_REF_METHODS(TypeName, ParentType, ObjectName)                    \
-  TypeName() = default;                                                                        \
-  explicit TypeName(::tvm::ffi::ObjectPtr<::tvm::ffi::Object> n) : ParentType(n) {}            \
-  TVM_FFI_DEFINE_DEFAULT_COPY_MOVE_AND_ASSIGN(TypeName)                                        \
-  const ObjectName* operator->() const { return static_cast<const ObjectName*>(data_.get()); } \
-  const ObjectName* get() const { return operator->(); }                                       \
+#define TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TypeName, ParentType, ObjectName)               \
+  TypeName() = default;                                                                            \
+  explicit TypeName(::tvm::ffi::ObjectPtr<ObjectName> n) : ParentType(n) {}                        \
+  explicit TypeName(::tvm::ffi::UnsafeInit tag) : ParentType(tag) {}                               \
+  TVM_FFI_DEFINE_DEFAULT_COPY_MOVE_AND_ASSIGN(TypeName)                                            \
+  using __PtrType = std::conditional_t<ObjectName::_type_mutable, ObjectName*, const ObjectName*>; \
+  __PtrType operator->() const { return static_cast<__PtrType>(data_.get()); }                     \
+  __PtrType get() const { return static_cast<__PtrType>(data_.get()); }                            \
+  static constexpr bool _type_is_nullable = true;                                                  \
   using ContainerType = ObjectName
 
-/*
+/*!
  * \brief Define object reference methods do not have undefined state.
  *
  * \param TypeName The object type name
  * \param ParentType The parent type of the objectref
  * \param ObjectName The type name of the object.
  */
-#define TVM_FFI_DEFINE_NOTNULLABLE_OBJECT_REF_METHODS(TypeName, ParentType, ObjectName)        \
-  explicit TypeName(::tvm::ffi::ObjectPtr<::tvm::ffi::Object> n) : ParentType(n) {}            \
-  TVM_FFI_DEFINE_DEFAULT_COPY_MOVE_AND_ASSIGN(TypeName)                                        \
-  const ObjectName* operator->() const { return static_cast<const ObjectName*>(data_.get()); } \
-  const ObjectName* get() const { return operator->(); }                                       \
-  static constexpr bool _type_is_nullable = false;                                             \
+#define TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TypeName, ParentType, ObjectName)            \
+  explicit TypeName(::tvm::ffi::UnsafeInit tag) : ParentType(tag) {}                               \
+  TVM_FFI_DEFINE_DEFAULT_COPY_MOVE_AND_ASSIGN(TypeName)                                            \
+  using __PtrType = std::conditional_t<ObjectName::_type_mutable, ObjectName*, const ObjectName*>; \
+  __PtrType operator->() const { return static_cast<__PtrType>(data_.get()); }                     \
+  __PtrType get() const { return static_cast<__PtrType>(data_.get()); }                            \
+  static constexpr bool _type_is_nullable = false;                                                 \
   using ContainerType = ObjectName
 
-/*
- * \brief Define object reference methods of whose content is mutable.
- * \param TypeName The object type name
- * \param ParentType The parent type of the objectref
- * \param ObjectName The type name of the object.
- * \note We recommend making objects immutable when possible.
- *       This macro is only reserved for objects that stores runtime states.
- */
-#define TVM_FFI_DEFINE_MUTABLE_OBJECT_REF_METHODS(TypeName, ParentType, ObjectName)         \
-  TypeName() = default;                                                                     \
-  TVM_FFI_DEFINE_DEFAULT_COPY_MOVE_AND_ASSIGN(TypeName);                                    \
-  explicit TypeName(::tvm::runtime::ObjectPtr<::tvm::runtime::Object> n) : ParentType(n) {} \
-  ObjectName* operator->() const { return static_cast<ObjectName*>(data_.get()); }          \
-  using ContainerType = ObjectName;
-
-/*
- * \brief Define object reference methods that is both not nullable and mutable.
- *
- * \param TypeName The object type name
- * \param ParentType The parent type of the objectref
- * \param ObjectName The type name of the object.
- */
-#define TVM_FFI_DEFINE_MUTABLE_NOTNULLABLE_OBJECT_REF_METHODS(TypeName, ParentType, ObjectName) \
-  explicit TypeName(::tvm::ffi::ObjectPtr<::tvm::ffi::Object> n) : ParentType(n) {}             \
-  TVM_DEFINE_DEFAULT_COPY_MOVE_AND_ASSIGN(TypeName);                                            \
-  ObjectName* operator->() const { return static_cast<ObjectName*>(data_.get()); }              \
-  ObjectName* get() const { return operator->(); }                                              \
-  static constexpr bool _type_is_nullable = false;                                              \
-  using ContainerType = ObjectName;
-
 namespace details {
+
 template <typename TargetType>
 TVM_FFI_INLINE bool IsObjectInstance(int32_t object_type_index) {
   static_assert(std::is_base_of_v<Object, TargetType>);
@@ -750,6 +1037,20 @@ struct ObjectUnsafe {
   }
 
   template <typename T>
+  TVM_FFI_INLINE static T ObjectRefFromObjectPtr(const ObjectPtr<Object>& ptr) {
+    T ref(UnsafeInit{});
+    ref.data_ = ptr;
+    return ref;
+  }
+
+  template <typename T>
+  TVM_FFI_INLINE static T ObjectRefFromObjectPtr(ObjectPtr<Object>&& ptr) {
+    T ref(UnsafeInit{});
+    ref.data_ = std::move(ptr);
+    return ref;
+  }
+
+  template <typename T>
   TVM_FFI_INLINE static ObjectPtr<T> ObjectPtrFromObjectRef(const ObjectRef& ref) {
     if constexpr (std::is_same_v<T, Object>) {
       return ref.data_;
@@ -763,7 +1064,10 @@ struct ObjectUnsafe {
     if constexpr (std::is_same_v<T, Object>) {
       return std::move(ref.data_);
     } else {
-      return tvm::ffi::ObjectPtr<T>(std::move(ref.data_.data_));
+      ObjectPtr<T> result;
+      result.data_ = std::move(ref.data_.data_);
+      ref.data_.data_ = nullptr;
+      return result;
     }
   }
 

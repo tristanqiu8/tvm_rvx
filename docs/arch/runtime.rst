@@ -227,18 +227,7 @@ Each ``Object`` subclass will override this to register its members. Here is an 
       namespace refl = tvm::ffi::reflection;
       refl::ObjectDef<IntImmNode>().def_ro("value", &IntImmNode::value);
     }
-
-    bool SEqualReduce(const IntImmNode* other, SEqualReducer equal) const {
-      return equal(dtype, other->dtype) && equal(value, other->value);
-    }
-
-    void SHashReduce(SHashReducer hash_reduce) const {
-      hash_reduce(dtype);
-      hash_reduce(value);
-    }
-
-    static constexpr const char* _type_key = "ir.IntImm";
-    TVM_DECLARE_FINAL_OBJECT_INFO(IntImmNode, PrimExprNode);
+    TVM_FFI_DECLARE_OBJECT_INFO_FINAL("ir.IntImm", IntImmNode, PrimExprNode);
   };
   // in cc file
   TVM_FFI_STATIC_INIT_BLOCK({ IntImmNode::RegisterReflection(); });

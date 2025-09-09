@@ -45,34 +45,73 @@ class Tuple : public ObjectRef {
  public:
   static_assert(details::all_storage_enabled_v<Types...>,
                 "All types used in Tuple<...> must be compatible with Any");
-
+  /*! \brief Default constructor */
   Tuple() : ObjectRef(MakeDefaultTupleNode()) {}
+  /*!
+   * \brief Constructor with UnsafeInit
+   */
+  explicit Tuple(UnsafeInit tag) : ObjectRef(tag) {}
+  /*! \brief Copy constructor */
   Tuple(const Tuple<Types...>& other) : ObjectRef(other) {}
+  /*! \brief Move constructor */
   Tuple(Tuple<Types...>&& other) : ObjectRef(std::move(other)) {}
+  /*!
+   * \brief Constructor from another tuple
+   * \param other The other tuple
+   * \tparam UTypes The types of the other tuple
+   * \tparam The enable_if_t type
+   */
   template <typename... UTypes,
             typename = std::enable_if_t<(details::type_contains_v<Types, UTypes> && ...), int>>
   Tuple(const Tuple<UTypes...>& other) : ObjectRef(other) {}
+
+  /*!
+   * \brief Constructor from another tuple
+   * \param other The other tuple
+   * \tparam UTypes The types of the other tuple
+   * \tparam The enable_if_t type
+   */
   template <typename... UTypes,
             typename = std::enable_if_t<(details::type_contains_v<Types, UTypes> && ...), int>>
   Tuple(Tuple<UTypes...>&& other) : ObjectRef(std::move(other)) {}
 
-  template <typename... UTypes,
-            typename = std::enable_if_t<sizeof...(Types) == sizeof...(UTypes) &&
-                                        !(sizeof...(Types) == 1 &&
-                                          (std::is_same_v<std::remove_cv_t<UTypes>, Tuple<Types>> &&
-                                           ...))>>
+  /*!
+   * \brief Constructor from arguments
+   * \param args The arguments
+   * \tparam UTypes The types of the other tuple
+   */
+  template <typename... UTypes, typename = std::enable_if_t<
+                                    sizeof...(Types) == sizeof...(UTypes) &&
+                                    !(sizeof...(Types) == 1 &&
+                                      (std::is_same_v<std::decay_t<UTypes>, Tuple<Types>> && ...))>>
   explicit Tuple(UTypes&&... args) : ObjectRef(MakeTupleNode(std::forward<UTypes>(args)...)) {}
 
+  /*!
+   * \brief Assignment from another tuple
+   * \param other The other tuple
+   * \tparam The enable_if_t type
+   */
   TVM_FFI_INLINE Tuple& operator=(const Tuple<Types...>& other) {
     data_ = other.data_;
     return *this;
   }
 
+  /*!
+   * \brief Assignment from another tuple
+   * \param other The other tuple
+   * \tparam The enable_if_t type
+   */
   TVM_FFI_INLINE Tuple& operator=(Tuple<Types...>&& other) {
     data_ = std::move(other.data_);
     return *this;
   }
 
+  /*!
+   * \brief Assignment from another tuple
+   * \param other The other tuple
+   * \tparam UTypes The types of the other tuple
+   * \tparam The enable_if_t type
+   */
   template <typename... UTypes,
             typename = std::enable_if_t<(details::type_contains_v<Types, UTypes> && ...)>>
   TVM_FFI_INLINE Tuple& operator=(const Tuple<UTypes...>& other) {
@@ -80,14 +119,18 @@ class Tuple : public ObjectRef {
     return *this;
   }
 
+  /*!
+   * \brief Assignment from another tuple
+   * \param other The other tuple
+   * \tparam UTypes The types of the other tuple
+   * \tparam The enable_if_t type
+   */
   template <typename... UTypes,
             typename = std::enable_if_t<(details::type_contains_v<Types, UTypes> && ...)>>
   TVM_FFI_INLINE Tuple& operator=(Tuple<UTypes...>&& other) {
     data_ = std::move(other.data_);
     return *this;
   }
-
-  explicit Tuple(ObjectPtr<Object> n) : ObjectRef(n) {}
 
   /*!
    * \brief Get I-th element of the tuple
@@ -237,7 +280,8 @@ struct TypeTraits<Tuple<Types...>> : public ObjectRefTypeTraitsBase<Tuple<Types.
     Array<Any> arr = TypeTraits<Array<Any>>::CopyFromAnyViewAfterCheck(src);
     Any* ptr = arr.CopyOnWrite()->MutableBegin();
     if (TryConvertElements<0, Types...>(ptr)) {
-      return Tuple<Types...>(details::ObjectUnsafe::ObjectPtrFromObjectRef<Object>(arr));
+      return details::ObjectUnsafe::ObjectRefFromObjectPtr<Tuple<Types...>>(
+          details::ObjectUnsafe::ObjectPtrFromObjectRef<Object>(arr));
     }
     return std::nullopt;
   }
@@ -269,9 +313,5 @@ inline constexpr bool type_contains_v<Tuple<T...>, Tuple<U...>> = (type_contains
 }  // namespace details
 
 }  // namespace ffi
-
-// Expose to the tvm namespace
-// Rationale: convinience and no ambiguity
-using ffi::Tuple;
 }  // namespace tvm
 #endif  // TVM_FFI_CONTAINER_TUPLE_H_

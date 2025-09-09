@@ -21,7 +21,8 @@
  * \file device_api.cc
  * \brief Device specific implementations
  */
-#include <tvm/ffi/container/ndarray.h>
+#include <tvm/ffi/container/tensor.h>
+#include <tvm/ffi/extra/c_env_api.h>
 #include <tvm/ffi/function.h>
 #include <tvm/ffi/optional.h>
 #include <tvm/ffi/reflection/registry.h>
@@ -106,8 +107,8 @@ static size_t GetDataAlignment(const DLDataType dtype) {
   return align;
 }
 
-size_t DeviceAPI::GetDataSize(const DLTensor& arr, Optional<String> mem_scope) {
-  if (!mem_scope.defined() || mem_scope.value().empty() || mem_scope.value() == "global") {
+size_t DeviceAPI::GetDataSize(const DLTensor& arr, ffi::Optional<ffi::String> mem_scope) {
+  if (!mem_scope.has_value() || mem_scope.value().empty() || mem_scope.value() == "global") {
     size_t size = 1;
     for (int i = 0; i < arr.ndim; ++i) {
       size *= static_cast<size_t>(arr.shape[i]);
@@ -120,8 +121,8 @@ size_t DeviceAPI::GetDataSize(const DLTensor& arr, Optional<String> mem_scope) {
 }
 
 void* DeviceAPI::AllocDataSpace(Device dev, int ndim, const int64_t* shape, DLDataType dtype,
-                                Optional<String> mem_scope) {
-  if (!mem_scope.defined() || mem_scope.value() == "" || mem_scope.value() == "global") {
+                                ffi::Optional<ffi::String> mem_scope) {
+  if (!mem_scope.has_value() || mem_scope.value().empty() || mem_scope.value() == "global") {
     // by default, we can always redirect to the flat memory allocations
     DLTensor temp;
     temp.data = nullptr;
@@ -163,7 +164,13 @@ TVMStreamHandle DeviceAPI::CreateStream(Device dev) { return nullptr; }
 
 void DeviceAPI::FreeStream(Device dev, TVMStreamHandle stream) {}
 
-TVMStreamHandle DeviceAPI::GetCurrentStream(Device dev) { return nullptr; }
+void DeviceAPI::SetStream(Device dev, TVMStreamHandle stream) {
+  TVM_FFI_CHECK_SAFE_CALL(TVMFFIEnvSetStream(dev.device_type, dev.device_id, stream, nullptr));
+}
+
+TVMStreamHandle DeviceAPI::GetCurrentStream(Device dev) {
+  return TVMFFIEnvGetCurrentStream(dev.device_type, dev.device_id);
+}
 
 void DeviceAPI::SyncStreamFromTo(Device dev, TVMStreamHandle event_src, TVMStreamHandle event_dst) {
 }
@@ -235,10 +242,7 @@ TVM_FFI_STATIC_INIT_BLOCK({
 using namespace tvm::runtime;
 
 int TVMBackendGetFuncFromEnv(void* mod_node, const char* func_name, TVMFFIObjectHandle* func) {
-  TVM_FFI_SAFE_CALL_BEGIN();
-  *func = const_cast<tvm::ffi::FunctionObj*>(
-      static_cast<ModuleNode*>(mod_node)->GetFuncFromEnv(func_name)->get());
-  TVM_FFI_SAFE_CALL_END();
+  return TVMFFIEnvModLookupFromImports(mod_node, func_name, func);
 }
 
 void* TVMBackendAllocWorkspace(int device_type, int device_id, uint64_t size, int dtype_code_hint,

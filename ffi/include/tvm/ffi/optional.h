@@ -27,6 +27,7 @@
 
 #include <tvm/ffi/error.h>
 #include <tvm/ffi/object.h>
+#include <tvm/ffi/string.h>
 
 #include <optional>
 #include <string>
@@ -37,7 +38,7 @@ namespace ffi {
 
 // Note: We place optional in tvm/ffi instead of tvm/ffi/container
 // because optional itself is an inherent core component of the FFI system.
-
+/// \cond Doxygen_Suppress
 template <typename T>
 inline constexpr bool is_optional_type_v = false;
 
@@ -49,11 +50,13 @@ inline constexpr bool is_optional_type_v<Optional<T>> = true;
 template <typename T>
 inline constexpr bool use_ptr_based_optional_v =
     (std::is_base_of_v<ObjectRef, T> && !is_optional_type_v<T>);
+/// \endcond
 
 // Specialization for non-ObjectRef types.
 // simply fallback to std::optional
 template <typename T>
-class Optional<T, std::enable_if_t<!use_ptr_based_optional_v<T>>> {
+class Optional<T, std::enable_if_t<!use_ptr_based_optional_v<T> && !std::is_same_v<T, String> &&
+                                   !std::is_same_v<T, Bytes>>> {
  public:
   // default constructors.
   Optional() = default;
@@ -138,6 +141,118 @@ class Optional<T, std::enable_if_t<!use_ptr_based_optional_v<T>>> {
   std::optional<T> data_;
 };
 
+// Specialization for String type, use nullptr to indicate nullopt
+template <typename T>
+class Optional<T, std::enable_if_t<std::is_same_v<T, String> || std::is_same_v<T, Bytes>>> {
+ public:
+  // default constructors.
+  Optional() = default;
+  Optional(const Optional<T>& other) : data_(other.data_) {}
+  Optional(Optional<T>&& other) : data_(std::move(other.data_)) {}
+  Optional(std::nullopt_t) {}  // NOLINT(*)
+  // normal value handling.
+  Optional(T other)  // NOLINT(*)
+      : data_(std::move(other)) {}
+
+  TVM_FFI_INLINE Optional<T>& operator=(const Optional<T>& other) {
+    data_ = other.data_;
+    return *this;
+  }
+
+  TVM_FFI_INLINE Optional<T>& operator=(Optional<T>&& other) {
+    data_ = std::move(other.data_);
+    return *this;
+  }
+
+  TVM_FFI_INLINE Optional<T>& operator=(T other) {
+    data_ = std::move(other);
+    return *this;
+  }
+
+  TVM_FFI_INLINE Optional<T>& operator=(std::nullopt_t) {
+    T(details::BytesBaseCell(std::nullopt)).swap(data_);
+    return *this;
+  }
+
+  TVM_FFI_INLINE const T& value() const& {
+    if (data_.data_ == std::nullopt) {
+      TVM_FFI_THROW(RuntimeError) << "Back optional access";
+    }
+    return data_;
+  }
+
+  TVM_FFI_INLINE String&& value() && {
+    if (data_.data_ == std::nullopt) {
+      TVM_FFI_THROW(RuntimeError) << "Back optional access";
+    }
+    return std::move(data_);
+  }
+
+  template <typename U = T>
+  TVM_FFI_INLINE T value_or(U&& default_value) const {
+    if (data_.data_ == std::nullopt) {
+      return std::forward<U>(default_value);
+    }
+    return data_;
+  }
+
+  TVM_FFI_INLINE explicit operator bool() const noexcept { return data_.data_ != std::nullopt; }
+
+  TVM_FFI_INLINE bool has_value() const noexcept { return data_.data_ != std::nullopt; }
+
+  TVM_FFI_INLINE bool operator==(const Optional<T>& other) const {
+    if (data_.data_ == std::nullopt) {
+      return other.data_.data_ == std::nullopt;
+    }
+    if (other.data_.data_ == std::nullopt) {
+      return false;
+    }
+    return data_ == other.data_;
+  }
+
+  TVM_FFI_INLINE bool operator!=(const Optional<T>& other) const { return !(*this == other); }
+
+  template <typename U>
+  TVM_FFI_INLINE bool operator==(const U& other) const {
+    if constexpr (std::is_same_v<U, std::nullopt_t>) {
+      return data_.data_ == std::nullopt;
+    } else {
+      if (data_.data_ == std::nullopt) {
+        return false;
+      }
+      return data_ == other;
+    }
+  }
+  template <typename U>
+  TVM_FFI_INLINE bool operator!=(const U& other) const {
+    if constexpr (std::is_same_v<U, std::nullopt_t>) {
+      return data_.data_ != std::nullopt;
+    } else {
+      if (data_.data_ == std::nullopt) {
+        return true;
+      }
+      return data_ != other;
+    }
+  }
+
+  /*!
+   * \brief Direct access to the value.
+   * \return the xvalue reference to the stored value.
+   * \note only use this function after checking has_value()
+   */
+  TVM_FFI_INLINE T&& operator*() && noexcept { return std::move(data_); }
+  /*!
+   * \brief Direct access to the value.
+   * \return the const reference to the stored value.
+   * \note only use this function  after checking has_value()
+   */
+  TVM_FFI_INLINE const T& operator*() const& noexcept { return data_; }
+
+ private:
+  // this is a private initializer
+  T data_{details::BytesBaseCell(std::nullopt)};
+};
+
 // Specialization for ObjectRef types.
 // nullptr is treated as std::nullopt.
 template <typename T>
@@ -147,7 +262,7 @@ class Optional<T, std::enable_if_t<use_ptr_based_optional_v<T>>> : public Object
   Optional() = default;
   Optional(const Optional<T>& other) : ObjectRef(other.data_) {}
   Optional(Optional<T>&& other) : ObjectRef(std::move(other.data_)) {}
-  explicit Optional(ObjectPtr<Object> ptr) : ObjectRef(ptr) {}
+  explicit Optional(ffi::UnsafeInit tag) : ObjectRef(tag) {}
   // nullopt hanlding
   Optional(std::nullopt_t) {}  // NOLINT(*)
 
@@ -185,19 +300,20 @@ class Optional<T, std::enable_if_t<use_ptr_based_optional_v<T>>> : public Object
     if (data_ == nullptr) {
       TVM_FFI_THROW(RuntimeError) << "Back optional access";
     }
-    return T(data_);
+    return details::ObjectUnsafe::ObjectRefFromObjectPtr<T>(data_);
   }
 
   TVM_FFI_INLINE T value() && {
     if (data_ == nullptr) {
       TVM_FFI_THROW(RuntimeError) << "Back optional access";
     }
-    return T(std::move(data_));
+    return details::ObjectUnsafe::ObjectRefFromObjectPtr<T>(std::move(data_));
   }
 
   template <typename U = std::remove_cv_t<T>>
   TVM_FFI_INLINE T value_or(U&& default_value) const {
-    return data_ != nullptr ? T(data_) : T(std::forward<U>(default_value));
+    return data_ != nullptr ? details::ObjectUnsafe::ObjectRefFromObjectPtr<T>(data_)
+                            : T(std::forward<U>(default_value));
   }
 
   TVM_FFI_INLINE explicit operator bool() const { return data_ != nullptr; }
@@ -209,14 +325,18 @@ class Optional<T, std::enable_if_t<use_ptr_based_optional_v<T>>> : public Object
    * \return the const reference to the stored value.
    * \note only use this function after checking has_value()
    */
-  TVM_FFI_INLINE T operator*() const& noexcept { return T(data_); }
+  TVM_FFI_INLINE T operator*() const& noexcept {
+    return details::ObjectUnsafe::ObjectRefFromObjectPtr<T>(data_);
+  }
 
   /*!
    * \brief Direct access to the value.
    * \return the const reference to the stored value.
    * \note only use this function  after checking has_value()
    */
-  TVM_FFI_INLINE T operator*() && noexcept { return T(std::move(data_)); }
+  TVM_FFI_INLINE T operator*() && noexcept {
+    return details::ObjectUnsafe::ObjectRefFromObjectPtr<T>(std::move(data_));
+  }
 
   TVM_FFI_INLINE bool operator==(std::nullptr_t) const noexcept { return !has_value(); }
   TVM_FFI_INLINE bool operator!=(std::nullptr_t) const noexcept { return has_value(); }
@@ -295,8 +415,5 @@ class Optional<T, std::enable_if_t<use_ptr_based_optional_v<T>>> : public Object
   }
 };
 }  // namespace ffi
-
-// Expose to the tvm namespace
-using ffi::Optional;
 }  // namespace tvm
 #endif  // TVM_FFI_OPTIONAL_H_

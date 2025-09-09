@@ -225,7 +225,7 @@ TVM_DLL const Op& call_spirv_pure_glsl450();
 // TODO(tvm-team) revisit the builtins below
 // some of them can simply become ops with special codegen attr.
 /*!
- * \brief Prefetch a cacheline
+ * \brief same signature as llvm.prefetch
  */
 TVM_DLL const Op& prefetch();
 
@@ -298,7 +298,7 @@ TVM_DLL const Op& tvm_struct_set();
 
 /*!
  * \brief See pseudo code
- * Type lookup_param(String param_name) {
+ * Type lookup_param(ffi::String param_name) {
  *     return __tvm_param__param_name;
  * }
  */
@@ -337,7 +337,7 @@ TVM_DLL const Op& tvm_stack_alloca();
 TVM_DLL const Op& tvm_stack_make_shape();
 
 /*!
- * \brief Allocate a NDArray(DLTensor) on stack, return the handle.
+ * \brief Allocate a Tensor(DLTensor) on stack, return the handle.
  *
  *  Type tvm_stack_make_array(Expr data,
  *                            Expr shape,
@@ -984,6 +984,7 @@ enum TVMStructFieldKind : int {
   // TVMValue field
   kTVMValueContent,
   kTVMFFIAnyTypeIndex,
+  kTVMFFIAnyZeroPadding,
   kTVMFFIAnyUnionValue,
   kTVMValueKindBound_
 };

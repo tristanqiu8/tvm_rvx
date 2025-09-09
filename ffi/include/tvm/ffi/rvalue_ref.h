@@ -71,15 +71,17 @@ namespace ffi {
 template <typename TObjRef, typename = std::enable_if_t<std::is_base_of_v<ObjectRef, TObjRef>>>
 class RValueRef {
  public:
+  /*! \brief the container type of the rvalue ref */
+  using ContainerType = typename TObjRef::ContainerType;
   /*! \brief only allow move constructor from rvalue of T */
   explicit RValueRef(TObjRef&& data)
-      : data_(details::ObjectUnsafe::ObjectPtrFromObjectRef<Object>(std::move(data))) {}
+      : data_(details::ObjectUnsafe::ObjectPtrFromObjectRef<ContainerType>(std::move(data))) {}
 
   /*! \brief return the data as rvalue */
   TObjRef operator*() && { return TObjRef(std::move(data_)); }
 
  private:
-  mutable ObjectPtr<Object> data_;
+  mutable ObjectPtr<ContainerType> data_;
 
   template <typename, typename>
   friend struct TypeTraits;
@@ -94,6 +96,7 @@ struct TypeTraits<RValueRef<TObjRef>> : public TypeTraitsBase {
 
   TVM_FFI_INLINE static void CopyToAnyView(const RValueRef<TObjRef>& src, TVMFFIAny* result) {
     result->type_index = TypeIndex::kTVMFFIObjectRValueRef;
+    result->zero_padding = 0;
     // store the address of the ObjectPtr, which allows us to move the value
     // and set the original ObjectPtr to nullptr
     result->v_ptr = &(src.data_);
@@ -106,7 +109,7 @@ struct TypeTraits<RValueRef<TObjRef>> : public TypeTraitsBase {
       // in this case we do not move the original rvalue ref since conversion creates a copy
       TVMFFIAny tmp_any;
       tmp_any.type_index = rvalue_ref->get()->type_index();
-
+      tmp_any.zero_padding = 0;
       tmp_any.v_obj = reinterpret_cast<TVMFFIObject*>(rvalue_ref->get());
       return "RValueRef<" + TypeTraits<TObjRef>::GetMismatchTypeInfo(&tmp_any) + ">";
     } else {
@@ -120,10 +123,12 @@ struct TypeTraits<RValueRef<TObjRef>> : public TypeTraitsBase {
       ObjectPtr<Object>* rvalue_ref = reinterpret_cast<ObjectPtr<Object>*>(src->v_ptr);
       TVMFFIAny tmp_any;
       tmp_any.type_index = rvalue_ref->get()->type_index();
+      tmp_any.zero_padding = 0;
       tmp_any.v_obj = reinterpret_cast<TVMFFIObject*>(rvalue_ref->get());
       // fast path, storage type matches, direct move the rvalue ref
       if (TypeTraits<TObjRef>::CheckAnyStrict(&tmp_any)) {
-        return RValueRef<TObjRef>(TObjRef(std::move(*rvalue_ref)));
+        return RValueRef<TObjRef>(
+            details::ObjectUnsafe::ObjectRefFromObjectPtr<TObjRef>(std::move(*rvalue_ref)));
       }
       if (std::optional<TObjRef> opt = TypeTraits<TObjRef>::TryCastFromAnyView(&tmp_any)) {
         // object type does not match up, we need to try to convert the object

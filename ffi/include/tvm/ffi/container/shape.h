@@ -18,8 +18,8 @@
  */
 
 /*!
- * \file tvm/ffi/shape.h
- * \brief Container to store shape of an NDArray.
+ * \file tvm/ffi/container/shape.h
+ * \brief Container to store shape of an Tensor.
  */
 #ifndef TVM_FFI_CONTAINER_SHAPE_H_
 #define TVM_FFI_CONTAINER_SHAPE_H_
@@ -39,6 +39,7 @@ namespace ffi {
 /*! \brief An object representing a shape tuple. */
 class ShapeObj : public Object, public TVMFFIShapeCell {
  public:
+  /*! \brief The type of shape index element. */
   using index_type = int64_t;
 
   /*! \brief Get "numel", meaning the number of elements of an array if the array has this shape */
@@ -50,9 +51,10 @@ class ShapeObj : public Object, public TVMFFIShapeCell {
     return product;
   }
 
+  /// \cond Doxygen_Suppress
   static constexpr const uint32_t _type_index = TypeIndex::kTVMFFIShape;
-  static constexpr const char* _type_key = StaticTypeKey::kTVMFFIShape;
-  TVM_FFI_DECLARE_STATIC_OBJECT_INFO(ShapeObj, Object);
+  TVM_FFI_DECLARE_OBJECT_INFO_STATIC(StaticTypeKey::kTVMFFIShape, ShapeObj, Object);
+  /// \endcond
 };
 
 namespace details {
@@ -89,6 +91,17 @@ TVM_FFI_INLINE ObjectPtr<ShapeObj> MakeInplaceShape(IterType begin, IterType end
   ObjectPtr<ShapeObj> p = MakeEmptyShape(length, &mutable_data);
   std::copy(begin, end, mutable_data);
   return p;
+}
+
+TVM_FFI_INLINE ObjectPtr<ShapeObj> MakeStridesFromShape(const int64_t* data, int64_t ndim) {
+  int64_t* strides_data;
+  ObjectPtr<ShapeObj> strides = details::MakeEmptyShape(ndim, &strides_data);
+  int64_t stride = 1;
+  for (int i = ndim - 1; i >= 0; --i) {
+    strides_data[i] = stride;
+    stride *= data[i];
+  }
+  return strides;
 }
 
 }  // namespace details
@@ -135,6 +148,16 @@ class Shape : public ObjectRef {
    */
   Shape(std::vector<int64_t> other)  // NOLINT(*)
       : ObjectRef(make_object<details::ShapeObjStdImpl>(std::move(other))) {}
+
+  /*!
+   * \brief Create a strides from a shape.
+   * \param data The shape data.
+   * \param ndim The number of dimensions.
+   * \return The strides.
+   */
+  static Shape StridesFromShape(const int64_t* data, int64_t ndim) {
+    return Shape(details::MakeStridesFromShape(data, ndim));
+  }
 
   /*!
    * \brief Return the data pointer
@@ -187,7 +210,12 @@ class Shape : public ObjectRef {
   /*! \return The product of the shape tuple */
   int64_t Product() const { return get()->Product(); }
 
-  TVM_FFI_DEFINE_NOTNULLABLE_OBJECT_REF_METHODS(Shape, ObjectRef, ShapeObj);
+  /// \cond Doxygen_Suppress
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(Shape, ObjectRef, ShapeObj);
+  /// \endcond
+
+ private:
+  explicit Shape(ObjectPtr<ShapeObj> ptr) : ObjectRef(ptr) {}
 };
 
 inline std::ostream& operator<<(std::ostream& os, const Shape& shape) {

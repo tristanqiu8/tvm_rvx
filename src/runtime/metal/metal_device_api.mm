@@ -312,17 +312,6 @@ void MetalWorkspace::StreamSync(Device dev, TVMStreamHandle stream) {
   };
 }
 
-void MetalWorkspace::SetStream(Device dev, TVMStreamHandle stream) {
-  ICHECK_LT(dev.device_id, devices.size()) << "Invalid device id " << dev.device_id;
-  ICHECK(stream != nullptr);
-  MetalThreadEntry::ThreadLocal()->stream[dev.device_id] = stream;
-}
-
-TVMStreamHandle MetalWorkspace::GetCurrentStream(Device dev) {
-  ICHECK_LT(dev.device_id, devices.size()) << "Invalid device id " << dev.device_id;
-  return MetalThreadEntry::ThreadLocal()->stream[dev.device_id];
-}
-
 void* MetalWorkspace::AllocWorkspace(Device dev, size_t size, DLDataType type_hint) {
   return MetalThreadEntry::ThreadLocal()->pool.AllocWorkspace(dev, size);
 }
@@ -391,9 +380,7 @@ class MetalTimerNode : public TimerNode {
     [mtl_dev_ sampleTimestamps:&stop_cpu_time_ gpuTimestamp:&stop_gpu_time_];
   }
   virtual int64_t SyncAndGetElapsedNanos() { return stop_gpu_time_ - start_gpu_time_; }
-
-  static constexpr const char* _type_key = "runtime.metal.MetalTimerNode";
-  TVM_DECLARE_FINAL_OBJECT_INFO(MetalTimerNode, TimerNode);
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("runtime.metal.MetalTimerNode", MetalTimerNode, TimerNode);
 
  private:
   Device dev_;
@@ -405,12 +392,10 @@ class MetalTimerNode : public TimerNode {
   MTLTimestamp stop_gpu_time_;
 };
 
-TVM_REGISTER_OBJECT_TYPE(MetalTimerNode);
-
 TVM_FFI_STATIC_INIT_BLOCK({
   namespace refl = tvm::ffi::reflection;
   refl::GlobalDef().def("profiling.timer.metal",
-                        [](Device dev) { return Timer(make_object<MetalTimerNode>(dev)); });
+                        [](Device dev) { return Timer(ffi::make_object<MetalTimerNode>(dev)); });
 });
 
 }  // namespace metal

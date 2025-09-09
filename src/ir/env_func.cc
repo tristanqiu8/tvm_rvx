@@ -42,13 +42,13 @@ TVM_STATIC_IR_FUNCTOR(ReprPrinter, vtable)
 ObjectPtr<Object> CreateEnvNode(const std::string& name) {
   auto f = tvm::ffi::Function::GetGlobal(name);
   ICHECK(f.has_value()) << "Cannot find global function \'" << name << '\'';
-  ObjectPtr<EnvFuncNode> n = make_object<EnvFuncNode>();
+  ObjectPtr<EnvFuncNode> n = ffi::make_object<EnvFuncNode>();
   n->func = *f;
   n->name = name;
   return n;
 }
 
-EnvFunc EnvFunc::Get(const String& name) { return EnvFunc(CreateEnvNode(name)); }
+EnvFunc EnvFunc::Get(const ffi::String& name) { return EnvFunc(CreateEnvNode(name)); }
 
 TVM_FFI_STATIC_INIT_BLOCK({
   namespace refl = tvm::ffi::reflection;
@@ -61,12 +61,13 @@ TVM_FFI_STATIC_INIT_BLOCK({
                     env->func.CallPacked(args.Slice(1), rv);
                   })
       .def("ir.EnvFuncGetFunction", [](const EnvFunc& n) { return n->func; });
+  // override EnvFuncNode to use name as the repr
+  refl::TypeAttrDef<EnvFuncNode>()
+      .def("__data_to_json__",
+           [](const EnvFuncNode* node) {
+             // simply save as the string
+             return node->name;
+           })
+      .def("__data_from_json__", EnvFunc::Get);
 });
-
-TVM_REGISTER_NODE_TYPE(EnvFuncNode)
-    .set_creator(CreateEnvNode)
-    .set_repr_bytes([](const Object* n) -> std::string {
-      return static_cast<const EnvFuncNode*>(n)->name;
-    });
-
 }  // namespace tvm
