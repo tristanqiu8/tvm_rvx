@@ -73,7 +73,7 @@ set(tvm_ffi_extra_objs_sources
   "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/extra/library_module.cc"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/extra/library_module_system_lib.cc"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/extra/library_module_dynamic_lib.cc"
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/extra/stream_context.cc"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/extra/env_context.cc"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/extra/env_c_api.cc"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/extra/testing.cc"
 )
@@ -215,6 +215,7 @@ if (TVM_FFI_BUILD_PYTHON_MODULE)
     Python_add_library(tvm_ffi_cython MODULE "${core_cpp}" WITH_SOABI)
     set_target_properties(tvm_ffi_cython PROPERTIES OUTPUT_NAME "core")
   endif()
+  target_include_directories(tvm_ffi_cython PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/python/tvm_ffi/cython)
   target_compile_features(tvm_ffi_cython PRIVATE cxx_std_17)
   target_link_libraries(tvm_ffi_cython PRIVATE tvm_ffi_header)
   target_link_libraries(tvm_ffi_cython PRIVATE tvm_ffi_shared)
@@ -248,6 +249,7 @@ endif()
 
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/tvm/ffi/ DESTINATION include/tvm/ffi/)
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/dlpack/include/ DESTINATION include/)
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/python/tvm_ffi/cython/tvm_ffi_python_helpers.h DESTINATION include/)
 install(TARGETS tvm_ffi_shared  DESTINATION lib)
 # ship additional dSYM files for debugging symbols on if available
 if (APPLE)
